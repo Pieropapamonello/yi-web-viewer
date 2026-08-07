@@ -1,4 +1,4 @@
-# Change the source URL below to the RTSP address of your Yi camera.
+# RTSP sources are injected from the local .env file through Docker Compose.
 hls: true
 hlsAddress: :8888
 hlsAllowOrigins: ['*']
@@ -6,7 +6,11 @@ hlsAlwaysRemux: true
 hlsVariant: lowLatency
 
 paths:
+  ipc365:
+    # The FFmpeg bridge publishes the normalized IPC365 stream here.
+    source: publisher
+
   yi:
-    # The real URL comes from MTX_PATHS_YI_SOURCE in docker-compose.yml.
+    # Reserved for the FREDI camera when its RTSP support is enabled.
     source: publisher
     rtspTransport: tcp

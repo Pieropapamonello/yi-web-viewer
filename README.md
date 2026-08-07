@@ -1,9 +1,9 @@
 # Yi Web Viewer
 
-Una web app senza pubblicita' per vedere una Yi che espone RTSP. Il repository contiene tre ruoli separati:
+Una web app senza pubblicita' per vedere telecamere RTSP/ONVIF. Il primo flusso attivo e' una IPC365 1080p; la FREDI G1 rimane predisposta in attesa di RTSP.
 
 ```text
-Yi RTSP -> MediaMTX nella LAN -> HLS (.m3u8)
+IPC365 RTSP -> FFmpeg bridge -> MediaMTX nella LAN -> HLS (.m3u8)
                                       |
                          EasyProxy opzionale (solo HLS)
                                       |
@@ -15,7 +15,7 @@ Render puo' ospitare la pagina web e, opzionalmente, EasyProxy. Non puo' collega
 ## Avvio locale
 
 1. Installa Docker Desktop.
-2. Copia `.env.example` in `.env` e inserisci il vero `RTSP_URL`.
+2. Copia `.env.example` in `.env` e inserisci il vero `IPC365_RTSP_URL`.
 3. Avvia gateway e viewer:
 
    ```powershell
@@ -24,7 +24,27 @@ Render puo' ospitare la pagina web e, opzionalmente, EasyProxy. Non puo' collega
 
 4. Apri `http://localhost:8080`.
 
-Il browser legge HLS da `http://localhost:8888/yi/index.m3u8`.
+Il browser legge HLS da `http://localhost:8890/ipc365/index.m3u8`. La porta 8890 evita il conflitto con EasyProxy, che nello stack esistente usa gia' la porta host 8888.
+
+La IPC365 testata espone H.264 1920x1080 sul percorso:
+
+```text
+rtsp://IP_CAMERA:554/cam/realmonitor?channel=1&subtype=0
+```
+
+Il bridge FFmpeg e' necessario perche' il server RTSP della camera restituisce un header `Transport` non standard. La porta RTSP 554 deve rimanere accessibile soltanto nella LAN.
+
+### Nginx Proxy Manager e Render
+
+MediaMTX e' collegato alla rete Docker esterna `proxy-net`, condivisa con Nginx Proxy Manager. Per fornire HLS alla pagina HTTPS su Render:
+
+1. crea in Nginx Proxy Manager un Proxy Host HTTPS dedicato;
+2. usa `camera-mediamtx` come **Forward Hostname** e `8888` come **Forward Port**;
+3. richiedi un certificato SSL valido e abilita Force SSL;
+4. proteggi il proxy con una Access List o, preferibilmente, un gateway autenticato;
+5. usa nell'app l'URL `https://DOMINIO/ipc365/index.m3u8`.
+
+Non impostare l'URL HTTP locale nella pagina Render: i browser bloccano i contenuti HTTP caricati da una pagina HTTPS.
 
 ### EasyProxy opzionale
 
@@ -44,7 +64,7 @@ Nel browser o da un host diverso dal container, sostituisci `mediamtx` con l'IP/
 
 ## Deploy della pagina su Render
 
-1. Crea un repository **privato** su GitHub e carica questi file, lasciando fuori `.env`.
+1. Carica questi file su GitHub lasciando sempre fuori `.env` e ogni credenziale.
 2. In Render: **New > Blueprint**, collega il repository e scegli `render.yaml`.
 3. Render pubblica `web/` come Static Site e assegna un dominio `onrender.com`.
 4. Imposta `streamUrl` in `web/config.js` all'URL **HTTPS pubblico** del tuo gateway HLS o del tuo proxy EasyProxy. Non inserire password RTSP o token in questo file.
