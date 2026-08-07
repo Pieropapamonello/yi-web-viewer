@@ -1,0 +1,22 @@
+.camera-chip-wrap { position:relative; flex:0 0 auto; }
+.camera-chip-wrap .camera-chip { width:100%; padding-right:38px; }
+.camera-chip-edit { position:absolute; top:7px; right:7px; width:27px; height:27px; border:0; border-radius:7px; background:#1c3554; color:#a9c8ed; }
+.camera-chip-edit:hover { background:#28517e; color:#fff; }
+.camera-chip.add { min-height:61px; }
+.auth-gate { position:fixed; inset:0; z-index:1000; display:grid; place-items:center; padding:20px; background:radial-gradient(circle at 50% 20%,#142c4a,#050b14 72%); }
+.auth-gate[hidden] { display:none; }
+.auth-card { width:min(420px,100%); padding:28px; border:1px solid #315175; border-radius:20px; background:#0e1c2fd9; box-shadow:0 30px 90px #000b; backdrop-filter:blur(16px); }
+.auth-brand { display:flex; align-items:center; gap:13px; margin-bottom:22px; }
+.auth-card h2 { margin:0; font-size:21px; }
+.auth-card p { margin:4px 0 0; color:var(--muted); font-size:13px; line-height:1.45; }
+.auth-card .field input { font-size:16px; }
+.auth-error { min-height:20px; margin-top:12px; color:var(--danger); font-size:12px; }
+.auth-submit { width:100%; margin-top:6px; }
+.account-button { display:flex; align-items:center; gap:7px; }
+.account-badge { display:grid; place-items:center; width:23px; height:23px; border-radius:50%; background:#244c78; font-size:11px; font-weight:800; }
+.settings-actions { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:20px; }
+.danger-button { border:1px solid #763844; border-radius:9px; background:#331923; color:#ff9da5; padding:10px 13px; }
+.field-check { display:flex; align-items:center; gap:9px; color:var(--muted); font-size:13px; margin:14px 0; }
+.field-check input { width:17px; height:17px; accent-color:var(--blue); }
+.camera-chip:focus-visible,.camera-chip-edit:focus-visible { outline:2px solid #7ab5ff; outline-offset:2px; }
+@media (max-width:670px) { .account-button .account-name { display:none; } .auth-card { padding:22px; } }

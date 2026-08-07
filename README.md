@@ -1,6 +1,6 @@
 # Yi Web Viewer
 
-Una web app senza pubblicita' per vedere telecamere RTSP/ONVIF. Il primo flusso attivo e' una IPC365 1080p; la FREDI G1 rimane predisposta in attesa di RTSP.
+Una web app multiutente senza pubblicita' per vedere e configurare telecamere HLS/RTSP/ONVIF. La pagina statica gira su Render; account e configurazioni cifrate sono gestiti dal gateway domestico.
 
 ```text
 IPC365 RTSP -> FFmpeg bridge -> MediaMTX nella LAN -> HLS (.m3u8)
@@ -71,9 +71,28 @@ Nella dashboard Render imposta:
 - Token API PTZ: il token prodotto dallo script
 - utente/password HLS: le credenziali della Access List Nginx, non quelle ONVIF
 
-Le password HLS e il token API sono conservati in `sessionStorage` e vengono richiesti nuovamente quando termina la sessione del browser.
+Le password HLS e il token PTZ sono salvati nel vault cifrato dell'utente e vengono richiesti una sola volta. La pagina Render non contiene credenziali.
 
 I frame PTZ proprietari sono basati sul progetto open source [MiguelDLM/360eyes_controller](https://github.com/MiguelDLM/360eyes_controller). I preset non sono disponibili perché il protocollo locale espone soltanto movimento direzionale e stop.
+
+### Account multiutente
+
+Il gateway espone registrazione pubblica, login e vault separati:
+
+- `POST /api/auth/register` crea un account con username, email e password;
+- `POST /api/auth/login` restituisce una sessione firmata con scadenza;
+- `GET/PUT /api/cameras` accede soltanto alle camere dell'utente autenticato;
+- password account hashate con PBKDF2-SHA256;
+- password HLS e token PTZ cifrati a riposo con AES-256-GCM;
+- limiti per IP su registrazione e login, oltre a un limite globale utenti.
+
+Configura una sola volta le chiavi del servizio nel file locale escluso da Git:
+
+```powershell
+powershell -ExecutionPolicy RemoteSigned -File .\gateway\onvif-api\setup-auth-service.ps1
+```
+
+Il container `onvif-gateway` deve montare un volume persistente su `/data`; nello stack MediaFlow il volume si chiama `camera-gateway-data`. Non eliminare quel volume senza backup: contiene account e vault cifrati. La registrazione e' pubblica, ma non include ancora verifica email o recupero automatico password.
 
 ### EasyProxy opzionale
 
@@ -96,8 +115,8 @@ Nel browser o da un host diverso dal container, sostituisci `mediamtx` con l'IP/
 1. Carica questi file su GitHub lasciando sempre fuori `.env` e ogni credenziale.
 2. In Render: **New > Blueprint**, collega il repository e scegli `render.yaml`.
 3. Render pubblica `web/` come Static Site e assegna un dominio `onrender.com`.
-4. Imposta `streamUrl` in `web/config.js` all'URL **HTTPS pubblico** del tuo gateway HLS o del tuo proxy EasyProxy. Non inserire password RTSP o token in questo file.
-5. Effettua commit e push di `web/config.js` solo se l'URL puo' essere pubblico. Altrimenti configura un backend autenticato prima del deploy.
+4. Imposta `apiBaseUrl` in `web/config.js` all'URL HTTPS del gateway account pubblico. Non inserire password RTSP o token in questo file.
+5. Ogni utente si registra dalla web app e configura le proprie camere; URL, credenziali HLS e token PTZ vengono salvati nel proprio vault.
 
 Il `render.yaml` distribuisce intenzionalmente solo l'interfaccia. Per distribuire EasyProxy su Render, crea un secondo Web Service Docker dal file `render/easyproxy.Dockerfile`, porta `10000`, e imposta `API_PASSWORD` come secret nel pannello Render. Un servizio Render EasyProxy puo' leggere soltanto un HLS che sia gia' raggiungibile in Internet: non puo' vedere l'IP LAN della Yi.
 

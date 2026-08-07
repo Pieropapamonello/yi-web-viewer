@@ -6,6 +6,7 @@
     <meta name="theme-color" content="#07111f">
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./app.css">
     <title>FREDI Control</title>
     <style>
       :root { --bg:#07111f; --panel:#101d2e; --panel-2:#14243a; --line:#273a53; --text:#edf4ff; --muted:#93a5bc; --blue:#3d91ff; --green:#37d39a; --warn:#ffb648; --danger:#ff6b77; }
@@ -74,7 +75,7 @@
     <dialog id="settingsDialog"><form method="dialog" class="modal"><header><h2>Impostazioni dashboard</h2><button class="secondary" value="cancel">×</button></header><div class="field"><label for="nameInput">Nome camera</label><input id="nameInput" maxlength="40"></div><div class="field"><label for="streamInput">URL HLS pubblico</label><input id="streamInput" type="url" placeholder="https://camera.example/ipc365/index.m3u8"></div><div class="field"><label for="streamUsernameInput">Utente autenticazione HLS/Nginx</label><input id="streamUsernameInput" autocomplete="username" placeholder="Lascia vuoto se non richiesto"></div><div class="field"><label for="streamPasswordInput">Password autenticazione HLS/Nginx</label><input id="streamPasswordInput" type="password" autocomplete="current-password" placeholder="Conservata solo per questa sessione"></div><div class="field"><label for="apiInput">URL API gateway PTZ</label><input id="apiInput" type="url" placeholder="https://control.example"></div><div class="field"><label for="apiTokenInput">Token API PTZ</label><input id="apiTokenInput" type="password" autocomplete="off" placeholder="Conservato solo per questa sessione"></div><div class="notice">Le password e il token restano nella sessione di questo browser e non vengono pubblicati su GitHub o Render.</div><div class="modal-foot"><button class="secondary" value="cancel">Annulla</button><button class="primary" id="saveSettings" value="default">Salva e collega</button></div></form></dialog>
     <div id="toast" role="status"></div>
     <script src="./config.js"></script><script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
-    <script>
+    <script type="text/plain" id="legacy-script">
       const defaults = window.APP_CONFIG || {};
       const saved = JSON.parse(localStorage.getItem('camera-control-v2') || '{}');
       const config = { cameraName: saved.cameraName || defaults.cameraName || 'IPC365 · 1080p', streamUrl: saved.streamUrl || defaults.streamUrl || '', streamUsername: saved.streamUsername || '', streamPassword: sessionStorage.getItem('camera-stream-password') || '', apiBaseUrl: saved.apiBaseUrl || defaults.apiBaseUrl || '', apiToken: sessionStorage.getItem('camera-api-token') || '' };
@@ -108,5 +109,6 @@
       renderEvents(); updateName(); if (sourceReady()) connectStream();
       if ('serviceWorker' in navigator) navigator.serviceWorker.register('./service-worker.js').catch(() => {});
     </script>
+    <script src="./app.js"></script>
   </body>
 </html>
