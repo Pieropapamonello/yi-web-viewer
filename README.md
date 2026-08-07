@@ -46,9 +46,9 @@ MediaMTX e' collegato alla rete Docker esterna `proxy-net`, condivisa con Nginx 
 
 Non impostare l'URL HTTP locale nella pagina Render: i browser bloccano i contenuti HTTP caricati da una pagina HTTPS.
 
-### Controlli PTZ tramite ONVIF
+### Controlli PTZ IPC365
 
-HLS trasporta soltanto il video. I pulsanti direzionali usano il gateway autenticato in `gateway/onvif-api`, che conserva le credenziali ONVIF esclusivamente sul PC di casa.
+HLS trasporta soltanto il video. I pulsanti direzionali usano il gateway autenticato in `gateway/onvif-api`. Questa IPC365 pubblicizza PTZ tramite ONVIF, ma il firmware chiude sia `ContinuousMove` sia `RelativeMove`; il gateway usa quindi il protocollo TCP locale IPC365 sulla porta 23456 per direzioni e stop. ONVIF rimane disponibile per rilevamento e metadati.
 
 Nel setup MediaFlow locale:
 
@@ -72,6 +72,8 @@ Nella dashboard Render imposta:
 - utente/password HLS: le credenziali della Access List Nginx, non quelle ONVIF
 
 Le password HLS e il token API sono conservati in `sessionStorage` e vengono richiesti nuovamente quando termina la sessione del browser.
+
+I frame PTZ proprietari sono basati sul progetto open source [MiguelDLM/360eyes_controller](https://github.com/MiguelDLM/360eyes_controller). I preset non sono disponibili perché il protocollo locale espone soltanto movimento direzionale e stop.
 
 ### EasyProxy opzionale
 

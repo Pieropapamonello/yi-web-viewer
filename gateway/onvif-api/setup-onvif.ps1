@@ -18,6 +18,8 @@ API_TOKEN=$apiToken
 ALLOWED_ORIGIN=https://yi-web-viewer.onrender.com
 PTZ_SPEED=0.45
 PTZ_DURATION_MS=350
+ONVIF_TIME_OFFSET_MS=0
+IPC365_PTZ_PORT=23456
 "@
 
 [System.IO.File]::WriteAllText($target, $content, [System.Text.UTF8Encoding]::new($false))

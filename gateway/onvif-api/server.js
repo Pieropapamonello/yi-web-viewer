@@ -2,6 +2,7 @@
 
 const http = require('node:http');
 const crypto = require('node:crypto');
+const net = require('node:net');
 const { Cam } = require('onvif');
 
 const PORT = Number(process.env.PORT || 3000);
@@ -13,6 +14,8 @@ const API_TOKEN = process.env.API_TOKEN || '';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://yi-web-viewer.onrender.com';
 const MOVE_SPEED = Math.min(1, Math.max(0.05, Number(process.env.PTZ_SPEED || 0.45)));
 const MOVE_DURATION = Math.min(2000, Math.max(100, Number(process.env.PTZ_DURATION_MS || 350)));
+const TIME_OFFSET_MS = Number(process.env.ONVIF_TIME_OFFSET_MS || 0);
+const IPC365_PTZ_PORT = Number(process.env.IPC365_PTZ_PORT || 23456);
 
 if (!USERNAME || !PASSWORD || API_TOKEN.length < 24) {
   console.error('ONVIF_USERNAME, ONVIF_PASSWORD and an API_TOKEN of at least 24 characters are required.');
@@ -30,7 +33,32 @@ function connectCamera() {
         username: USERNAME,
         password: PASSWORD,
         timeout: 8000,
-      }, (error) => error ? reject(error) : resolve(camera));
+        autoconnect: false,
+        preserveAddress: true,
+      });
+
+      // Some IPC365 firmware returns InvalidSecurity to the unauthenticated
+      // GetSystemDateAndTime request required by ONVIF clients. Seed the
+      // WS-Security clock from the Docker host, then skip that broken call.
+      const cameraNow = () => new Date(Date.now() + TIME_OFFSET_MS);
+      camera.timeShift = cameraNow().getTime() - (process.uptime() * 1000);
+      camera.getSystemDateAndTime = function getSystemDateAndTime(callback) {
+        callback.call(this, null, cameraNow(), '');
+      };
+      // This IPC365 closes the socket on GetServices. Use the older but
+      // widely-supported GetCapabilities discovery path instead.
+      camera.getCapabilities((capabilityError) => {
+        if (capabilityError) return reject(new Error(`GetCapabilities: ${capabilityError.message || capabilityError}`));
+        camera.getProfiles((profileError) => {
+          if (profileError) return reject(new Error(`GetProfiles: ${profileError.message || profileError}`));
+          camera.getVideoSources((sourceError) => {
+            if (sourceError) return reject(new Error(`GetVideoSources: ${sourceError.message || sourceError}`));
+            camera.getActiveSources();
+            console.log(`ONVIF ready; PTZ path ${camera.uri?.ptz?.path || 'unknown'}; profile ${camera.activeSource?.profileToken || 'unknown'}`);
+            resolve(camera);
+          });
+        });
+      });
     }).catch((error) => {
       cameraPromise = undefined;
       throw error;
@@ -49,29 +77,61 @@ function stop(camera) {
   return call(camera, 'stop', { panTilt: true, zoom: true }).catch(() => undefined);
 }
 
-async function move(action) {
-  const camera = await connectCamera();
-  if (action === 'home') {
-    await call(camera, 'gotoHomePosition', {});
-    return;
-  }
+const IPC365_HEADER = Buffer.from([
+  0xcc, 0xdd, 0xee, 0xff, 0x77, 0x4f, 0x00, 0x00,
+  0xe3, 0x12, 0x69, 0x00, 0x48, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0xaf, 0x93, 0xc6, 0x3b,
+  0x09, 0xf7, 0x4b, 0x01, 0x01, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+]);
 
+function ipc365Frame(action) {
+  const frame = Buffer.alloc(64);
+  IPC365_HEADER.copy(frame);
   const vectors = {
-    up: { x: 0, y: MOVE_SPEED },
-    down: { x: 0, y: -MOVE_SPEED },
-    left: { x: -MOVE_SPEED, y: 0 },
-    right: { x: MOVE_SPEED, y: 0 },
+    right: [5, 0],
+    left: [-5, 0],
+    up: [0, 5],
+    down: [0, -5],
+    stop: [0, 0],
   };
   const vector = vectors[action];
-  if (!vector) throw new Error('Unsupported PTZ action');
+  if (!vector) throw new Error('Unsupported IPC365 PTZ action');
+  frame.writeInt32LE(vector[0], 36);
+  frame.writeInt32LE(vector[1], 40);
+  return frame;
+}
 
-  await call(camera, 'continuousMove', {
-    ...vector,
-    onlySendPanTilt: true,
-    timeout: MOVE_DURATION + 500,
+function ipc365Move(action) {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host: HOST, port: IPC365_PTZ_PORT });
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      reject(error);
+    };
+    socket.setTimeout(5000, () => fail(new Error('IPC365 PTZ connection timeout')));
+    socket.once('error', fail);
+    socket.once('connect', () => {
+      socket.write(ipc365Frame(action), (error) => {
+        if (error) return fail(error);
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          socket.end();
+          resolve();
+        };
+        if (action === 'stop') return finish();
+        setTimeout(() => socket.write(ipc365Frame('stop'), (stopError) => stopError ? fail(stopError) : finish()), MOVE_DURATION);
+      });
+    });
   });
-  await new Promise((resolve) => setTimeout(resolve, MOVE_DURATION));
-  await stop(camera);
+}
+
+async function move(action) {
+  await ipc365Move(action === 'home' ? 'stop' : action);
 }
 
 async function gotoPreset(index) {
@@ -149,5 +209,5 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`ONVIF gateway listening on port ${PORT}; camera ${HOST}:${ONVIF_PORT}`);
+  console.log(`Camera gateway listening on port ${PORT}; ONVIF ${HOST}:${ONVIF_PORT}; IPC365 PTZ ${HOST}:${IPC365_PTZ_PORT}`);
 });
