@@ -102,7 +102,9 @@ const IPC365_HEADER = Buffer.from([
 ]);
 
 function ipc365Frame(action) {
-  const frame = Buffer.alloc(64);
+  // The IPC365 frame declares 0x48 (72) bytes in its header. Sending only
+  // 64 bytes is silently accepted by TCP but ignored by stricter 81XXF firmware.
+  const frame = Buffer.alloc(72);
   IPC365_HEADER.copy(frame);
   const vectors = {
     right: [5, 0],

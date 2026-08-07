@@ -12,7 +12,7 @@ services:
       - proxy-net
 
   # The IPC365 RTSP server returns a non-standard Transport header. FFmpeg
-  # accepts it and republishes a normalized H.264 feed to MediaMTX.
+  # accepts it and republishes normalized H.264 + browser-compatible AAC.
   ipc365-bridge:
     image: lscr.io/linuxserver/ffmpeg:latest
     container_name: ipc365-bridge
@@ -29,9 +29,18 @@ services:
       - ${IPC365_RTSP_URL:?Set IPC365_RTSP_URL in .env before starting Docker}
       - -map
       - 0:v:0
+      - -map
+      - 0:a:0?
       - -c:v
       - copy
-      - -an
+      - -c:a
+      - aac
+      - -b:a
+      - 48k
+      - -ar
+      - "8000"
+      - -ac
+      - "1"
       - -f
       - rtsp
       - -rtsp_transport

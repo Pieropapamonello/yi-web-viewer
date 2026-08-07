@@ -44,7 +44,7 @@ La IPC365 testata espone H.264 1920x1080 sul percorso:
 rtsp://IP_CAMERA:554/cam/realmonitor?channel=1&subtype=0
 ```
 
-Il bridge FFmpeg e' necessario perche' il server RTSP della camera restituisce un header `Transport` non standard. La porta RTSP 554 deve rimanere accessibile soltanto nella LAN.
+Il bridge FFmpeg e' necessario perche' il server RTSP della camera restituisce un header `Transport` non standard. Il video H.264 viene copiato senza ricodifica; la traccia G.711/PCM A-law viene convertita in AAC mono 8 kHz per renderla compatibile con HLS e browser. La porta RTSP 554 deve rimanere accessibile soltanto nella LAN.
 
 ### Nginx Proxy Manager e Render
 
@@ -60,7 +60,7 @@ Non impostare l'URL HTTP locale nella pagina Render: i browser bloccano i conten
 
 ### Controlli PTZ IPC365
 
-HLS trasporta soltanto il video. I pulsanti direzionali usano il gateway autenticato in `gateway/onvif-api`. Questa IPC365 pubblicizza PTZ tramite ONVIF, ma il firmware chiude sia `ContinuousMove` sia `RelativeMove`; il gateway usa quindi il protocollo TCP locale IPC365 sulla porta 23456 per direzioni e stop. ONVIF rimane disponibile per rilevamento e metadati.
+HLS trasporta video e audio ma non i comandi. I pulsanti direzionali usano il gateway autenticato in `gateway/onvif-api`. Questa IPC365 pubblicizza PTZ tramite ONVIF, ma il firmware chiude sia `ContinuousMove` sia `RelativeMove`; il gateway usa quindi il protocollo TCP locale IPC365 sulla porta 23456 per direzioni e stop. ONVIF rimane disponibile per rilevamento e metadati. I frame proprietari devono essere inviati per intero: il modello 81XXF ignora silenziosamente pacchetti troncati sotto i 72 byte.
 
 Nel setup MediaFlow locale:
 
