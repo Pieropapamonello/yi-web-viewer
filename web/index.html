@@ -3,52 +3,98 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Yi RTSP Viewer</title>
+    <meta name="theme-color" content="#07111f">
+    <title>FREDI Control</title>
     <style>
+      :root { --bg:#07111f; --panel:#101d2e; --panel-2:#14243a; --line:#273a53; --text:#edf4ff; --muted:#93a5bc; --blue:#3d91ff; --green:#37d39a; --warn:#ffb648; --danger:#ff6b77; }
       * { box-sizing: border-box; }
-      html, body { width: 100%; height: 100%; margin: 0; background: #000; color: #fff; font-family: system-ui, sans-serif; }
-      main { width: 100%; height: 100%; display: grid; place-items: center; }
-      video { width: 100%; height: 100%; object-fit: contain; background: #000; }
-      #status { position: fixed; inset: auto 0 24px; text-align: center; font-size: 14px; color: #ddd; pointer-events: none; }
-      #status.error { color: #ff8a80; }
+      body { margin:0; min-width:320px; min-height:100vh; background:linear-gradient(135deg,#07111f,#0d1b2e 55%,#10243c); color:var(--text); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+      button { font:inherit; color:inherit; cursor:pointer; }
+      .app { max-width:1540px; margin:auto; padding:24px; }
+      header { display:flex; align-items:center; justify-content:space-between; gap:20px; margin-bottom:24px; }
+      .brand { display:flex; gap:13px; align-items:center; } .logo { display:grid; place-items:center; width:42px; height:42px; border-radius:13px; background:linear-gradient(135deg,var(--blue),#7159ef); font-size:22px; box-shadow:0 12px 28px #2878c844; }
+      h1 { font-size:20px; margin:0; letter-spacing:-.3px; } .sub { color:var(--muted); font-size:13px; margin-top:3px; }
+      .top-actions { display:flex; gap:10px; align-items:center; } .status { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:13px; padding:9px 12px; border:1px solid var(--line); border-radius:10px; background:#091728aa; }
+      .dot { width:8px; height:8px; border-radius:50%; background:var(--warn); box-shadow:0 0 10px currentColor; } .dot.live { background:var(--green); }
+      .icon-btn,.primary { border:1px solid var(--line); background:var(--panel); border-radius:10px; padding:10px 13px; transition:.18s; } .icon-btn:hover,.primary:hover,.ptz button:hover { border-color:#4b76a5; transform:translateY(-1px); }
+      .primary { background:var(--blue); border-color:var(--blue); font-weight:700; }
+      .layout { display:grid; grid-template-columns:minmax(0,1fr) 330px; gap:20px; }
+      .card { background:linear-gradient(145deg,#122238e8,#0d192ae8); border:1px solid var(--line); border-radius:17px; box-shadow:0 20px 55px #00000024; }
+      .viewer { overflow:hidden; } .camera-bar { padding:16px 18px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--line); }
+      .camera-name { font-weight:700; } .camera-meta { color:var(--muted); font-size:12px; margin-top:3px; }.live-tag { color:var(--green); font-weight:700; font-size:12px; letter-spacing:.6px; }
+      .stage { aspect-ratio:16/9; position:relative; background:radial-gradient(circle at center,#172b45,#07111e 72%); display:grid; place-items:center; overflow:hidden; }
+      video { display:none; width:100%; height:100%; object-fit:contain; background:#000; } .stage.playing video { display:block; }.stage.playing .empty { display:none; }
+      .empty { text-align:center; max-width:400px; padding:30px; }.empty .camera-icon { font-size:48px; margin-bottom:12px; }.empty h2 { margin:0 0 8px; font-size:19px; }.empty p { margin:0; color:var(--muted); line-height:1.5; font-size:14px; }
+      .video-tools { position:absolute; left:16px; right:16px; bottom:15px; display:flex; justify-content:space-between; opacity:.08; transition:.2s; }.stage:hover .video-tools { opacity:1; }.video-tools div { display:flex; gap:8px; }.round { border:1px solid #ffffff36; background:#09111fd4; border-radius:9px; padding:9px 11px; }
+      .control-row { display:grid; grid-template-columns:1.2fr .8fr 1fr; gap:14px; padding:17px; border-top:1px solid var(--line); }.action { min-height:44px; display:flex; align-items:center; justify-content:center; gap:8px; border:1px solid var(--line); border-radius:10px; background:var(--panel); font-weight:650; }.action.record { color:#ff8e96; }.action.active { background:#6e2330; border-color:#f05c68; }.action:disabled { cursor:not-allowed; opacity:.6; }
+      .below { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-top:20px; }.section { padding:18px; }.section h3 { margin:0 0 16px; font-size:15px; }.recording-empty { border:1px dashed #3c5574; border-radius:11px; padding:24px; text-align:center; color:var(--muted); font-size:13px; }.recording-list { display:none; }.recording { display:flex; gap:10px; align-items:center; padding:10px 0; border-bottom:1px solid var(--line); font-size:13px; }.thumb { width:52px; height:34px; border-radius:6px; background:#1e3655; display:grid; place-items:center; }
+      aside { display:flex; flex-direction:column; gap:20px; }.side { padding:18px; }.side h3 { margin:0 0 15px; font-size:15px; }.info { display:flex; justify-content:space-between; align-items:center; padding:11px 0; border-bottom:1px solid var(--line); font-size:13px; }.info:last-child { border:none; }.info span:first-child { color:var(--muted); }.pending { color:var(--warn); }
+      .ptz { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; max-width:180px; margin:0 auto; }.ptz button { min-height:48px; border-radius:11px; border:1px solid var(--line); background:var(--panel-2); font-size:20px; }.ptz .center { color:var(--blue); font-size:15px; }.ptz .blank { visibility:hidden; }
+      .presets { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:16px; }.preset { padding:9px 5px; border:1px solid var(--line); border-radius:8px; background:transparent; color:var(--muted); font-size:12px; }.preset:hover { color:var(--text); }
+      .storage { display:grid; gap:10px; }.storage-item { display:flex; align-items:center; gap:11px; padding:12px; border:1px solid var(--line); border-radius:11px; background:#0b1727; }.storage-icon { width:32px; height:32px; display:grid; place-items:center; border-radius:9px; background:#1b304c; }.storage-title { font-size:13px; font-weight:700; }.storage-state { color:var(--muted); font-size:11px; margin-top:2px; }.storage-action { margin-left:auto; border:0; background:transparent; color:var(--blue); font-size:12px; }
+      .notice { border-left:3px solid var(--blue); padding:3px 0 3px 11px; color:var(--muted); font-size:12px; line-height:1.45; }.notice b { color:var(--text); }
+      dialog { color:var(--text); width:min(500px,calc(100% - 32px)); background:#101e31; border:1px solid #3a5575; border-radius:16px; padding:0; box-shadow:0 25px 80px #000a; } dialog::backdrop { background:#020713a6; }.modal { padding:20px; }.modal header { margin:0 0 18px; }.modal h2 { margin:0; font-size:18px; }.field { display:grid; gap:7px; margin:13px 0; }.field label { color:var(--muted); font-size:12px; }.field input { width:100%; border:1px solid var(--line); border-radius:9px; background:#091525; color:var(--text); padding:11px; outline:none; }.field input:focus { border-color:var(--blue); }.modal-foot { display:flex; justify-content:flex-end; gap:10px; margin-top:20px; }.secondary { border:1px solid var(--line); border-radius:9px; background:transparent; padding:10px 13px; }
+      #toast { position:fixed; bottom:24px; left:50%; transform:translate(-50%,120px); transition:.25s; background:#172941; border:1px solid #416186; color:#eef6ff; padding:12px 16px; border-radius:10px; font-size:13px; box-shadow:0 16px 35px #0008; z-index:10; }.show { transform:translate(-50%,0)!important; }
+      @media (max-width:1050px) { .layout { grid-template-columns:1fr; } aside { display:grid; grid-template-columns:1fr 1fr; } .storage-card { grid-column:span 2; } } @media (max-width:670px) { .app { padding:13px; } header { align-items:flex-start; } .top-actions .status { display:none; } .layout,.below,aside { display:block; }.below .card,aside .card { margin-top:14px; }.control-row { grid-template-columns:1fr; }.camera-bar { padding:13px; }.stage { aspect-ratio:4/3; }.top-actions .primary { display:none; } }
     </style>
   </head>
   <body>
-    <main>
-      <video id="player" autoplay muted playsinline controls></video>
+    <main class="app">
+      <header>
+        <div class="brand"><div class="logo">◉</div><div><h1>FREDI Control</h1><div class="sub">Sicurezza domestica · dashboard privata</div></div></div>
+        <div class="top-actions"><div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Sorgente non configurata</span></div><button class="icon-btn" id="settingsButton">⚙ Impostazioni</button><button class="primary" id="snapshotTop">▣ Snapshot</button></div>
+      </header>
+
+      <div class="layout">
+        <section>
+          <div class="card viewer">
+            <div class="camera-bar"><div><div class="camera-name" id="cameraName">FREDI G1 · Box auto</div><div class="camera-meta">IP riservato: 192.168.1.101 · 1080p</div></div><div class="live-tag" id="liveTag">OFFLINE</div></div>
+            <div class="stage" id="stage"><video id="player" autoplay muted playsinline></video><div class="empty"><div class="camera-icon">◉</div><h2>Live non disponibile</h2><p>Configura un URL HLS o WebRTC quando il gateway RTSP sarà pronto. La dashboard è già pronta per collegarsi.</p></div><div class="video-tools"><div><button class="round" id="muteButton">🔇</button><button class="round" id="fullButton">⛶</button></div><div><button class="round" id="qualityButton">AUTO</button></div></div></div>
+            <div class="control-row"><button class="action record" id="recordButton">⏺ Registra clip</button><button class="action" id="snapshotButton">▣ Snapshot</button><button class="action" id="speakerButton">🔊 Audio camera</button></div>
+          </div>
+          <div class="below">
+            <section class="card section"><h3>Registrazioni</h3><div class="recording-empty" id="recordingEmpty">Le clip registrate appariranno qui. Potrai salvarle sul gateway locale, Dropbox o MEGA.</div><div class="recording-list" id="recordingList"></div></section>
+            <section class="card section"><h3>Stato sistema</h3><div class="info"><span>Gateway RTSP / HLS</span><b class="pending" id="gatewayState">Da configurare</b></div><div class="info"><span>Rilevamento movimento</span><b class="pending">In attesa API camera</b></div><div class="info"><span>Ultimo snapshot</span><b id="snapshotState">—</b></div></section>
+          </div>
+        </section>
+
+        <aside>
+          <section class="card side"><h3>Controlli PTZ</h3><div class="ptz"><button class="blank">·</button><button data-ptz="up">↑</button><button class="blank">·</button><button data-ptz="left">←</button><button class="center" data-ptz="home">⌂</button><button data-ptz="right">→</button><button class="blank">·</button><button data-ptz="down">↓</button><button class="blank">·</button></div><div class="presets"><button class="preset" data-preset="1">Preset 1</button><button class="preset" data-preset="2">Preset 2</button><button class="preset" data-preset="3">Preset 3</button></div></section>
+          <section class="card side storage-card"><h3>Destinazioni salvataggio</h3><div class="storage"><div class="storage-item"><div class="storage-icon">▣</div><div><div class="storage-title">Gateway locale</div><div class="storage-state">Pronto quando RTSP sarà attivo</div></div><button class="storage-action" data-storage="locale">Configura</button></div><div class="storage-item"><div class="storage-icon">◆</div><div><div class="storage-title">Dropbox</div><div class="storage-state">Backup OAuth da collegare</div></div><button class="storage-action" data-storage="dropbox">Collega</button></div><div class="storage-item"><div class="storage-icon">M</div><div><div class="storage-title">MEGA</div><div class="storage-state">Backup gateway da collegare</div></div><button class="storage-action" data-storage="mega">Collega</button></div><div class="storage-item"><div class="storage-icon">↓</div><div><div class="storage-title">Questo dispositivo</div><div class="storage-state">Download manuale di clip e snapshot</div></div><button class="storage-action" data-storage="device">Attivo</button></div></div></section>
+          <section class="card side"><div class="notice"><b>Privacy prima.</b><br>Non inserire password RTSP, Dropbox o MEGA nel browser. I collegamenti cloud richiederanno un backend sicuro sul gateway.</div></section>
+        </aside>
+      </div>
     </main>
-    <div id="status">Connessione alla telecamera…</div>
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+    <dialog id="settingsDialog"><form method="dialog" class="modal"><header><h2>Impostazioni dashboard</h2><button class="secondary" value="cancel">×</button></header><div class="field"><label for="nameInput">Nome camera</label><input id="nameInput" maxlength="40"></div><div class="field"><label for="streamInput">URL HLS pubblico (senza password)</label><input id="streamInput" type="url" placeholder="https://gateway.example/yi/index.m3u8"></div><div class="field"><label for="apiInput">URL API gateway per PTZ e storage</label><input id="apiInput" type="url" placeholder="https://gateway.example"></div><div class="notice">Questi valori vengono salvati solo nel browser corrente. L’API gateway verrà aggiunta quando RTSP sarà disponibile.</div><div class="modal-foot"><button class="secondary" value="cancel">Annulla</button><button class="primary" id="saveSettings" value="default">Salva e collega</button></div></form></dialog>
+    <div id="toast" role="status"></div>
+    <script src="./config.js"></script><script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
     <script>
-      const player = document.getElementById('player');
-      const status = document.getElementById('status');
-      // For remote hosting set window.APP_CONFIG.streamUrl in web/config.js.
-      const streamUrl = window.APP_CONFIG?.streamUrl ||
-        `http://${location.hostname}:8888/yi/index.m3u8`;
-
-      function showError(message) {
-        status.textContent = message;
-        status.className = 'error';
+      const defaults = window.APP_CONFIG || {};
+      const saved = JSON.parse(localStorage.getItem('fredi-control') || '{}');
+      const config = { cameraName: saved.cameraName || defaults.cameraName || 'FREDI G1 · Box auto', streamUrl: saved.streamUrl || defaults.streamUrl || '', apiBaseUrl: saved.apiBaseUrl || defaults.apiBaseUrl || '' };
+      const $ = (id) => document.getElementById(id); const player = $('player'); let hls; let mediaRecorder; let chunks = []; let toastTimer;
+      function toast(message) { $('toast').textContent = message; $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 3600); }
+      function updateName() { $('cameraName').textContent = config.cameraName; }
+      function sourceReady() { return Boolean(config.streamUrl); }
+      function connectStream() {
+        if (!sourceReady()) return;
+        $('gatewayState').textContent = 'Connessione…';
+        if (window.Hls && Hls.isSupported()) { hls?.destroy(); hls = new Hls({ lowLatencyMode:true, liveSyncDurationCount:2 }); hls.loadSource(config.streamUrl); hls.attachMedia(player); hls.on(Hls.Events.MANIFEST_PARSED, () => player.play().catch(() => toast('Tocca Play per avviare il live.'))); hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) offline('Gateway HLS non raggiungibile.'); }); }
+        else if (player.canPlayType('application/vnd.apple.mpegurl')) { player.src = config.streamUrl; player.play().catch(() => {}); }
+        else offline('Questo browser non supporta HLS.');
       }
-
-      if (window.Hls && Hls.isSupported()) {
-        const hls = new Hls({ lowLatencyMode: true, liveSyncDurationCount: 2 });
-        hls.loadSource(streamUrl);
-        hls.attachMedia(player);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          status.textContent = '';
-          player.play().catch(() => {});
-        });
-        hls.on(Hls.Events.ERROR, (_, data) => {
-          if (data.fatal) showError('Impossibile collegarsi alla telecamera. Controlla RTSP e rete.');
-        });
-      } else if (player.canPlayType('application/vnd.apple.mpegurl')) {
-        player.src = streamUrl;
-        player.addEventListener('loadeddata', () => { status.textContent = ''; });
-        player.addEventListener('error', () => showError('Impossibile collegarsi alla telecamera.'));
-      } else {
-        showError('Questo browser non supporta la riproduzione HLS.');
-      }
+      function offline(message) { $('gatewayState').textContent = 'Non raggiungibile'; $('gatewayState').className = 'pending'; $('statusText').textContent = message || 'Gateway non raggiungibile'; $('statusDot').classList.remove('live'); $('liveTag').textContent = 'OFFLINE'; }
+      player.addEventListener('playing', () => { $('stage').classList.add('playing'); $('statusText').textContent = 'Live connesso'; $('statusDot').classList.add('live'); $('liveTag').textContent = 'LIVE'; $('gatewayState').textContent = 'Online'; $('gatewayState').className = ''; });
+      player.addEventListener('error', () => offline('Errore nel live.'));
+      async function actionFromGateway(path, body) { if (!config.apiBaseUrl) throw new Error('Configura prima l’URL API del gateway.'); const response = await fetch(config.apiBaseUrl.replace(/\/$/, '') + path, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body || {}) }); if (!response.ok) throw new Error('Il gateway ha rifiutato la richiesta.'); return response.json().catch(() => ({})); }
+      document.querySelectorAll('[data-ptz]').forEach((button) => button.addEventListener('click', async () => { try { await actionFromGateway('/api/ptz', { action:button.dataset.ptz }); toast('Comando PTZ inviato.'); } catch (e) { toast(e.message); } }));
+      document.querySelectorAll('[data-preset]').forEach((button) => button.addEventListener('click', async () => { try { await actionFromGateway('/api/ptz/preset', { preset:Number(button.dataset.preset) }); toast('Preset richiamato.'); } catch (e) { toast(e.message); } }));
+      function snapshot() { if (!sourceReady() || !player.videoWidth) return toast('Snapshot disponibile quando il live sarà attivo.'); const canvas=document.createElement('canvas'); canvas.width=player.videoWidth; canvas.height=player.videoHeight; canvas.getContext('2d').drawImage(player,0,0); canvas.toBlob((blob)=>{ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`fredi-${Date.now()}.jpg`; a.click(); URL.revokeObjectURL(a.href); $('snapshotState').textContent=new Date().toLocaleTimeString('it-IT'); toast('Snapshot scaricato su questo dispositivo.'); },'image/jpeg',.92); }
+      function addRecording(blob) { const url=URL.createObjectURL(blob); const row=document.createElement('div'); row.className='recording'; row.innerHTML=`<div class="thumb">▶</div><div><b>Clip manuale</b><div class="sub">${new Date().toLocaleString('it-IT')}</div></div><a class="storage-action" href="${url}" download="fredi-clip-${Date.now()}.webm">Scarica</a>`; $('recordingEmpty').style.display='none'; $('recordingList').style.display='block'; $('recordingList').prepend(row); }
+      function record() { if (!player.captureStream || !sourceReady() || player.paused) return toast('Avvia prima il live per registrare una clip.'); const button=$('recordButton'); if (mediaRecorder?.state === 'recording') { mediaRecorder.stop(); button.classList.remove('active'); button.textContent='⏺ Registra clip'; return; } try { chunks=[]; mediaRecorder=new MediaRecorder(player.captureStream(), { mimeType:'video/webm' }); mediaRecorder.ondataavailable=(e)=>e.data.size && chunks.push(e.data); mediaRecorder.onstop=()=>{ addRecording(new Blob(chunks,{type:'video/webm'})); toast('Clip pronta per il download.'); }; mediaRecorder.start(); button.classList.add('active'); button.textContent='■ Ferma registrazione'; toast('Registrazione locale avviata.'); } catch { toast('Questo browser non supporta la registrazione del live.'); } }
+      $('settingsButton').onclick=()=>{ $('nameInput').value=config.cameraName; $('streamInput').value=config.streamUrl; $('apiInput').value=config.apiBaseUrl; $('settingsDialog').showModal(); }; $('saveSettings').onclick=()=>{ config.cameraName=$('nameInput').value.trim()||'FREDI G1'; config.streamUrl=$('streamInput').value.trim(); config.apiBaseUrl=$('apiInput').value.trim(); localStorage.setItem('fredi-control',JSON.stringify(config)); updateName(); if(config.streamUrl) connectStream(); else offline('Sorgente non configurata'); toast('Impostazioni salvate in questo browser.'); };
+      $('snapshotButton').onclick=snapshot; $('snapshotTop').onclick=snapshot; $('recordButton').onclick=record; $('muteButton').onclick=()=>{ player.muted=!player.muted; $('muteButton').textContent=player.muted?'🔇':'🔊'; }; $('fullButton').onclick=()=>$('stage').requestFullscreen?.(); $('speakerButton').onclick=()=>toast('Audio bidirezionale richiederà l’API del gateway.'); $('qualityButton').onclick=()=>toast('Qualità automatica: controllata dal gateway HLS.'); document.querySelectorAll('[data-storage]').forEach((button)=>button.onclick=()=>toast(button.dataset.storage==='device'?'Download locale già disponibile per clip e snapshot.':'Collegamento disponibile quando il backend gateway sarà attivo.'));
+      updateName(); if (sourceReady()) connectStream();
     </script>
   </body>
 </html>
