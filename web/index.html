@@ -24,6 +24,11 @@
       <symbol id="i-record" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/></symbol>
       <symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></symbol>
       <symbol id="i-volume" viewBox="0 0 24 24"><path d="M5 10v4h4l5 4V6L9 10zM17 9a4 4 0 0 1 0 6"/></symbol>
+      <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.7 10.7 6.6-4M8.7 13.3l6.6 4"/></symbol>
+      <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></symbol>
+      <symbol id="i-light" viewBox="0 0 24 24"><path d="M9 18h6M10 21h4M8.5 14.5A6 6 0 1 1 15.5 14.5c-.9.7-1.5 1.5-1.5 2.5h-4c0-1-.6-1.8-1.5-2.5Z"/></symbol>
+      <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"/></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 9a6 6 0 0 1 12 0v5l2 3H4l2-3zM10 20h4"/></symbol>
       <symbol id="i-edit" viewBox="0 0 24 24"><path d="m4 16-1 5 5-1L19 9l-4-4zM13.5 6.5l4 4"/></symbol>
       <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"/></symbol>
       <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
@@ -120,13 +125,14 @@
                 <video id="player" autoplay muted playsinline></video>
                 <div class="video-empty" id="videoEmpty"><div class="empty-camera"><svg><use href="#i-camera"/></svg></div><h3 id="emptyTitle">Live non disponibile</h3><p id="emptyText">Configura una sorgente HLS per iniziare.</p><button class="button secondary" id="configureCurrent">Configura camera</button></div>
                 <div class="video-loading" id="videoLoading" hidden><span></span><p>Connessione al live…</p></div>
-                <div class="video-toolbar"><div><button id="muteButton" title="Audio"><svg><use href="#i-volume"/></svg></button><button id="fullButton" title="Schermo intero"><svg><use href="#i-expand"/></svg></button></div><div><button id="snapshotButton" title="Snapshot"><svg><use href="#i-snapshot"/></svg></button><button id="recordButton" title="Registra"><svg><use href="#i-record"/></svg><span>Registra</span></button></div></div>
+                <div class="video-toolbar"><div><button id="muteButton" title="Audio"><svg><use href="#i-volume"/></svg></button><button id="fullButton" title="Schermo intero"><svg><use href="#i-expand"/></svg></button><button id="rotateButton" title="Ruota prospettiva"><svg><use href="#i-rotate"/></svg></button></div><label class="quality-control" title="Qualità del live"><span>Qualità</span><select id="qualitySelect"><option value="-1">Auto</option></select></label><div><button id="snapshotButton" title="Snapshot"><svg><use href="#i-snapshot"/></svg></button><button id="recordButton" title="Registra"><svg><use href="#i-record"/></svg><span>Registra</span></button></div></div>
               </div>
             </article>
           </div>
 
           <aside class="control-column">
             <article class="panel ptz-panel"><header><div><span class="eyebrow">Movimento</span><h3>Controlli PTZ</h3></div><span class="panel-state" id="ptzState">Non configurato</span></header><div class="ptz-pad"><button class="up" data-ptz="up" aria-label="Su">↑</button><button class="left" data-ptz="left" aria-label="Sinistra">←</button><button class="stop" data-ptz="stop" aria-label="Ferma">■</button><button class="right" data-ptz="right" aria-label="Destra">→</button><button class="down" data-ptz="down" aria-label="Giù">↓</button></div><p>Premi una direzione per un movimento breve e preciso.</p></article>
+            <article class="panel feature-panel"><header><div><span class="eyebrow">Dispositivo</span><h3>Funzioni rapide</h3></div><span class="panel-state" id="capabilityState">Gateway</span></header><div class="feature-grid"><button id="shareCamera"><svg><use href="#i-share"/></svg><span>Condividi app</span><small>Link senza credenziali</small></button><button id="orientationFeature"><svg><use href="#i-rotate"/></svg><span>Prospettiva</span><small id="orientationState">Normale</small></button><button id="lightFeature" disabled><svg><use href="#i-light"/></svg><span>Luce</span><small>Da acquisire</small></button><button id="guardFeature" disabled><svg><use href="#i-bell"/></svg><span>Guardia</span><small>Da acquisire</small></button><button id="talkFeature" disabled><svg><use href="#i-mic"/></svg><span>Parla</span><small>Da acquisire</small></button></div><p id="capabilityHint">Le funzioni non supportate restano disattivate in sicurezza.</p></article>
             <article class="panel details-panel"><header><div><span class="eyebrow">Dettagli</span><h3>Configurazione</h3></div><button class="text-button" id="testCurrent">Verifica</button></header><dl><div><dt>Video</dt><dd id="detailVideo">Non configurato</dd></div><div><dt>Controllo</dt><dd id="detailPtz">Non configurato</dd></div><div><dt>Credenziali</dt><dd id="detailCredentials">Nessuna</dd></div><div><dt>Ultimo snapshot</dt><dd id="snapshotState">—</dd></div></dl></article>
           </aside>
         </section>

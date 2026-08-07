@@ -18,6 +18,9 @@ const MOVE_SPEED = Math.min(1, Math.max(0.05, Number(process.env.PTZ_SPEED || 0.
 const MOVE_DURATION = Math.min(2000, Math.max(100, Number(process.env.PTZ_DURATION_MS || 1500)));
 const TIME_OFFSET_MS = Number(process.env.ONVIF_TIME_OFFSET_MS || 0);
 const IPC365_PTZ_PORT = Number(process.env.IPC365_PTZ_PORT || 23456);
+const IPC365_PTZ_STEP = Math.min(30, Math.max(3, Number(process.env.IPC365_PTZ_STEP || 12)));
+const IPC365_SOURCE_ID = process.env.IPC365_SOURCE_ID || 'af93c63b';
+const IPC365_DEVICE_ID = process.env.IPC365_DEVICE_ID || '09f74b01';
 const DASHBOARD_PASSWORD_ITERATIONS = Number(process.env.DASHBOARD_PASSWORD_ITERATIONS || 310000);
 const AUTH_SECRET = process.env.AUTH_SECRET || '';
 const VAULT_KEY = process.env.VAULT_KEY || '';
@@ -95,28 +98,38 @@ function stop(camera) {
 
 const IPC365_HEADER = Buffer.from([
   0xcc, 0xdd, 0xee, 0xff, 0x77, 0x4f, 0x00, 0x00,
-  0xe3, 0x12, 0x69, 0x00, 0x48, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0xaf, 0x93, 0xc6, 0x3b,
-  0x09, 0xf7, 0x4b, 0x01, 0x01, 0x00, 0x00, 0x00,
+  0xe4, 0x12, 0x69, 0x00, 0x48, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x00,
 ]);
+
+function ipc365Id(value, name) {
+  if (!/^[a-f0-9]{8}$/i.test(value)) throw new Error(`${name} must contain exactly 8 hexadecimal characters`);
+  return Buffer.from(value, 'hex');
+}
 
 function ipc365Frame(action) {
   // The IPC365 frame declares 0x48 (72) bytes in its header. Sending only
   // 64 bytes is silently accepted by TCP but ignored by stricter 81XXF firmware.
   const frame = Buffer.alloc(72);
   IPC365_HEADER.copy(frame);
+  ipc365Id(IPC365_SOURCE_ID, 'IPC365_SOURCE_ID').copy(frame, 20);
+  ipc365Id(IPC365_DEVICE_ID, 'IPC365_DEVICE_ID').copy(frame, 24);
   const vectors = {
-    right: [5, 0],
-    left: [-5, 0],
-    up: [0, 5],
-    down: [0, -5],
+    right: [IPC365_PTZ_STEP, 0],
+    left: [-IPC365_PTZ_STEP, 0],
+    // Captured IPC365/S5-T firmware uses an inverted vertical axis.
+    up: [0, -IPC365_PTZ_STEP],
+    down: [0, IPC365_PTZ_STEP],
     stop: [0, 0],
   };
   const vector = vectors[action];
   if (!vector) throw new Error('Unsupported IPC365 PTZ action');
-  frame.writeInt32LE(vector[0], 36);
-  frame.writeInt32LE(vector[1], 40);
+  // The two signed PTZ values start at offsets 40 and 44. Older community
+  // examples are frequently copied with an off-by-four error at 36/40.
+  frame.writeInt32LE(vector[0], 40);
+  frame.writeInt32LE(vector[1], 44);
   return frame;
 }
 
@@ -334,6 +347,7 @@ function cleanCameras(value) {
       apiBaseUrl: cleanUrl(camera?.apiBaseUrl),
       apiToken: typeof camera?.apiToken === 'string' ? camera.apiToken.slice(0, 1024) : '',
       ptz: camera?.ptz !== false,
+      rotation: camera?.rotation === 180 ? 180 : 0,
     };
   });
 }
@@ -612,6 +626,25 @@ const server = http.createServer(async (request, response) => {
       await move(body.action);
       console.log(`PTZ ${body.action} completed in ${MOVE_DURATION}ms`);
       return send(response, 200, { ok: true, action: body.action, durationMs: MOVE_DURATION }, headers);
+    }
+    if (pathname === '/api/capabilities' && request.method === 'GET') {
+      return send(response, 200, {
+        ok:true,
+        protocol:'ipc365-local',
+        features:{
+          liveVideo:true,
+          liveAudio:true,
+          ptz:true,
+          snapshot:true,
+          localRecording:true,
+          orientation:true,
+          light:false,
+          guard:false,
+          talk:false,
+          sdPlayback:false,
+          cloudPlayback:false,
+        },
+      }, headers);
     }
     if (pathname === '/api/ptz/preset' && request.method === 'POST') {
       await gotoPreset(Number(body.preset));

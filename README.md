@@ -7,7 +7,9 @@ Una web app multiutente senza pubblicita' per vedere e configurare telecamere HL
 - registrazione pubblica e vault separato per account;
 - vista focus e griglia, ricerca, riordino drag-and-drop e duplicazione camere;
 - configurazione guidata di video HLS e gateway PTZ;
-- verifica collegamenti, live a bassa latenza, snapshot e clip locali;
+- verifica collegamenti, live a bassa latenza, audio, qualità HLS, fullscreen e orientamento;
+- snapshot e clip persistenti nel browser tramite IndexedDB, con download ed eliminazione;
+- controlli PTZ IPC365 verificati tramite confronto automatico dei fotogrammi;
 - tema chiaro/scuro/sistema, modalità compatta e preferenze sincronizzate;
 - timeline account cifrata e persistente;
 - cambio password con revoca delle altre sessioni ed eliminazione account;
@@ -85,7 +87,9 @@ Nella dashboard Render imposta:
 
 Le password HLS e il token PTZ sono salvati nel vault cifrato dell'utente e vengono richiesti una sola volta. La pagina Render non contiene credenziali.
 
-I frame PTZ proprietari sono basati sul progetto open source [MiguelDLM/360eyes_controller](https://github.com/MiguelDLM/360eyes_controller). I preset non sono disponibili perché il protocollo locale espone soltanto movimento direzionale e stop.
+I frame PTZ proprietari sono basati sul progetto open source [MiguelDLM/360eyes_controller](https://github.com/MiguelDLM/360eyes_controller) e sono stati corretti tramite una cattura PCAP della camera 81XXF/S5-T: i valori firmati pan/tilt iniziano agli offset 40/44 e gli identificatori peer sono specifici della sessione IPC365. Configura `IPC365_SOURCE_ID` e `IPC365_DEVICE_ID` soltanto nel file `onvif.env` locale; non inserirli nella pagina web. I preset non sono disponibili perché il protocollo locale acquisito espone soltanto movimento direzionale e stop.
+
+Il gateway espone anche `GET /api/capabilities`: l'interfaccia abilita solo le funzioni realmente supportate. Luce, modalità guardia, conversazione bidirezionale e playback TF/cloud restano disattivati finché una cattura separata non ne documenta i comandi, evitando falsi controlli che mostrano successo senza agire sulla camera.
 
 ### Account multiutente
 

@@ -23,6 +23,7 @@
   let toastTimer = null;
   let deferredInstallPrompt = null;
   let draggedId = '';
+  let recordingUrls = [];
 
   function safeJson(value, fallback) {
     try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
@@ -220,6 +221,53 @@
     return cameras.find((camera) => camera.id === activeId) || null;
   }
 
+  function applyOrientation(camera = currentCamera()) {
+    const rotated = camera?.rotation === 180;
+    player.classList.toggle('rotated', rotated);
+    $('orientationState').textContent = rotated ? 'Ruotata 180°' : 'Normale';
+    $('rotateButton').classList.toggle('active', rotated);
+  }
+
+  async function toggleOrientation() {
+    const camera = currentCamera(); if (!camera) return;
+    camera.rotation = camera.rotation === 180 ? 0 : 180;
+    applyOrientation(camera);
+    try { await persistCameras(); toast(`Prospettiva ${camera.rotation === 180 ? 'ruotata' : 'normale'}.`, 'success'); }
+    catch (error) { camera.rotation = camera.rotation === 180 ? 0 : 180; applyOrientation(camera); toast(error.message, 'error'); }
+  }
+
+  async function shareCurrentCamera() {
+    const camera = currentCamera(); if (!camera) return;
+    const data = { title:`${camera.name} · FREDI Control`, text:'Apri FREDI Control. Le credenziali della camera non sono incluse.', url:location.origin };
+    try {
+      if (navigator.share) await navigator.share(data);
+      else { await navigator.clipboard.writeText(data.url); toast('Link app copiato. Nessuna credenziale condivisa.', 'success'); }
+    } catch (error) { if (error.name !== 'AbortError') toast('Condivisione non disponibile.', 'error'); }
+  }
+
+  async function loadCapabilities(camera) {
+    $('capabilityState').textContent = 'Verifica…';
+    if (!camera?.apiBaseUrl || !camera.apiToken) { $('capabilityState').textContent = 'Locale'; return; }
+    try {
+      const response = await fetch(`${camera.apiBaseUrl.replace(/\/$/, '')}/api/capabilities`, { cache:'no-store', headers:{ Authorization:`Bearer ${camera.apiToken}` } });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Gateway non raggiungibile');
+      $('capabilityState').textContent = result.protocol === 'ipc365-local' ? 'IPC365' : 'Gateway';
+      $('capabilityHint').textContent = 'Live, audio, PTZ, snapshot e registrazione locale disponibili. Talk, luce, guardia e playback richiedono una nuova cattura.';
+    } catch { $('capabilityState').textContent = 'Non verificato'; }
+  }
+
+  function renderQualityLevels() {
+    const select = $('qualitySelect');
+    select.innerHTML = '<option value="-1">Auto</option>';
+    (hls?.levels || []).forEach((level, index) => {
+      const option = document.createElement('option'); option.value = String(index);
+      option.textContent = level.height ? `${level.height}p` : level.bitrate ? `${Math.round(level.bitrate / 1000)} kb/s` : `Livello ${index + 1}`;
+      select.append(option);
+    });
+    select.disabled = (hls?.levels || []).length < 2;
+  }
+
   function renderAll() {
     renderStats();
     renderSwitcher();
@@ -322,6 +370,9 @@
     const ptzReady = camera.ptz && camera.apiBaseUrl && camera.apiToken;
     $('ptzState').textContent = ptzReady ? 'Pronto' : 'Non configurato';
     document.querySelectorAll('[data-ptz]').forEach((button) => { button.disabled = !ptzReady; });
+    applyOrientation(camera);
+    loadCapabilities(camera);
+    loadRecordings(camera.id);
     if (camera.streamUrl) connectStream(camera); else offline('Sorgente video non configurata.', 'Apri le impostazioni e inserisci un URL HLS HTTPS.');
   }
 
@@ -346,7 +397,7 @@
     if (window.Hls && Hls.isSupported()) {
       hls = new Hls({ lowLatencyMode:true, liveSyncDurationCount:2, backBufferLength:10, xhrSetup:(xhr) => { if (authorization) xhr.setRequestHeader('Authorization', authorization); } });
       hls.loadSource(camera.streamUrl); hls.attachMedia(player);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => player.play().catch(() => { setVideoLoading(false); toast('Tocca il video per avviare il live.'); }));
+      hls.on(Hls.Events.MANIFEST_PARSED, () => { renderQualityLevels(); player.play().catch(() => { setVideoLoading(false); toast('Tocca il video per avviare il live.'); }); });
       hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) { setVideoLoading(false); offline('Live non raggiungibile.', 'Controlla URL, CORS e credenziali HLS.'); } });
     } else if (player.canPlayType('application/vnd.apple.mpegurl') && !authorization) {
       player.src = camera.streamUrl; player.play().catch(() => setVideoLoading(false));
@@ -408,6 +459,7 @@
       id:editingId || crypto.randomUUID(), name, model:$('modelInput').value.trim(), streamUrl:$('streamInput').value.trim(),
       streamUsername:$('streamUsernameInput').value.trim(), streamPassword:$('streamPasswordInput').value,
       apiBaseUrl:$('ptzInput').checked ? $('apiInput').value.trim() : '', apiToken:$('ptzInput').checked ? $('apiTokenInput').value : '', ptz:$('ptzInput').checked,
+      rotation:previous?.rotation === 180 ? 180 : 0,
     };
     const backup = [...cameras];
     const index = cameras.findIndex((item) => item.id === camera.id);
@@ -514,11 +566,49 @@
     } catch { toast('Registrazione non supportata dal browser.', 'error'); }
   }
 
-  function addRecording(blob) {
-    const url = URL.createObjectURL(blob); const camera = currentCamera();
-    const row = document.createElement('div'); row.className = 'recording';
-    row.innerHTML = `${icon('record')}<div><b>${escapeHtml(camera?.name || 'Camera')}</b><small>${escapeHtml(new Date().toLocaleString('it-IT'))}</small></div><a href="${url}" download="${slug(camera?.name || 'camera')}-${Date.now()}.webm">Scarica</a>`;
-    $('recordingEmpty').hidden = true; $('recordingList').prepend(row); toast('Clip pronta per il download.', 'success');
+  function mediaDatabase() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('fredi-local-media-v1', 1);
+      request.onupgradeneeded = () => { const store = request.result.createObjectStore('clips', { keyPath:'id' }); store.createIndex('cameraId', 'cameraId'); };
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+  }
+
+  async function saveRecording(blob, camera) {
+    const db = await mediaDatabase();
+    const record = { id:crypto.randomUUID(), cameraId:camera.id, cameraName:camera.name, createdAt:Date.now(), type:blob.type || 'video/webm', size:blob.size, blob };
+    await new Promise((resolve, reject) => { const transaction = db.transaction('clips', 'readwrite'); transaction.objectStore('clips').put(record); transaction.oncomplete = resolve; transaction.onerror = () => reject(transaction.error); });
+    db.close(); return record;
+  }
+
+  async function deleteRecording(id) {
+    const db = await mediaDatabase();
+    await new Promise((resolve, reject) => { const transaction = db.transaction('clips', 'readwrite'); transaction.objectStore('clips').delete(id); transaction.oncomplete = resolve; transaction.onerror = () => reject(transaction.error); });
+    db.close(); await loadRecordings(activeId); toast('Clip eliminata dal dispositivo.', 'success');
+  }
+
+  async function loadRecordings(cameraId) {
+    recordingUrls.forEach(URL.revokeObjectURL); recordingUrls = [];
+    const container = $('recordingList'); container.innerHTML = '';
+    if (!cameraId || !window.indexedDB) { $('recordingEmpty').hidden = false; return; }
+    try {
+      const db = await mediaDatabase();
+      const records = await new Promise((resolve, reject) => { const request = db.transaction('clips').objectStore('clips').index('cameraId').getAll(cameraId); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+      db.close(); records.sort((a, b) => b.createdAt - a.createdAt);
+      $('recordingEmpty').hidden = records.length > 0;
+      records.forEach((record) => {
+        const url = URL.createObjectURL(record.blob); recordingUrls.push(url);
+        const row = document.createElement('div'); row.className = 'recording';
+        row.innerHTML = `${icon('record')}<div><b>${escapeHtml(record.cameraName || 'Camera')}</b><small>${escapeHtml(new Date(record.createdAt).toLocaleString('it-IT'))} · ${Math.max(1, Math.round(record.size / 1024 / 1024))} MB</small></div><a href="${url}" download="${slug(record.cameraName || 'camera')}-${record.createdAt}.webm">Scarica</a><button type="button" data-delete-recording="${record.id}" title="Elimina">×</button>`;
+        container.append(row);
+      });
+    } catch { $('recordingEmpty').hidden = false; }
+  }
+
+  async function addRecording(blob) {
+    const camera = currentCamera(); if (!camera) return;
+    try { await saveRecording(blob, camera); await loadRecordings(camera.id); toast('Clip salvata in modo persistente su questo dispositivo.', 'success'); }
+    catch { toast('Impossibile salvare la clip: controlla lo spazio disponibile.', 'error'); }
   }
 
   function applyPreferences() {
@@ -595,6 +685,10 @@
     $('snapshotButton').addEventListener('click', snapshot); $('recordButton').addEventListener('click', toggleRecording);
     $('muteButton').addEventListener('click', () => { player.muted = !player.muted; $('muteButton').classList.toggle('unmuted', !player.muted); });
     $('fullButton').addEventListener('click', () => $('stage').requestFullscreen?.());
+    $('rotateButton').addEventListener('click', toggleOrientation); $('orientationFeature').addEventListener('click', toggleOrientation);
+    $('shareCamera').addEventListener('click', shareCurrentCamera);
+    $('qualitySelect').addEventListener('change', () => { if (hls) hls.currentLevel = Number($('qualitySelect').value); });
+    $('recordingList').addEventListener('click', (event) => { const button = event.target.closest('[data-delete-recording]'); if (button) deleteRecording(button.dataset.deleteRecording); });
     player.addEventListener('playing', () => { setVideoLoading(false); $('stage').classList.add('playing'); $('cameraStatusDot').classList.add('live'); $('liveTag').className = 'live-badge live'; $('liveTag').textContent = 'LIVE'; });
     player.addEventListener('error', () => { setVideoLoading(false); offline('Errore di riproduzione.', 'Controlla il codec e il gateway HLS.'); });
     $('viewFocus').addEventListener('click', () => setView('focus')); $('viewGrid').addEventListener('click', () => setView('grid'));
