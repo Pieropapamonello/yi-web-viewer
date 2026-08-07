@@ -3,8 +3,10 @@ $ErrorActionPreference = 'Stop'
 $cameraCredential = Get-Credential -UserName 'admin' -Message 'Credenziali ONVIF della IPC365'
 $plainPassword = $cameraCredential.GetNetworkCredential().Password
 $tokenBytes = New-Object byte[] 32
-[System.Security.Cryptography.RandomNumberGenerator]::Fill($tokenBytes)
-$apiToken = [Convert]::ToHexString($tokenBytes).ToLowerInvariant()
+$randomGenerator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$randomGenerator.GetBytes($tokenBytes)
+$randomGenerator.Dispose()
+$apiToken = ([System.BitConverter]::ToString($tokenBytes) -replace '-', '').ToLowerInvariant()
 $target = Join-Path $PSScriptRoot 'onvif.env'
 
 $content = @"
