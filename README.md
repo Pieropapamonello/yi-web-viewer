@@ -2,6 +2,18 @@
 
 Una web app multiutente senza pubblicita' per vedere e configurare telecamere HLS/RTSP/ONVIF. La pagina statica gira su Render; account e configurazioni cifrate sono gestiti dal gateway domestico.
 
+## Funzioni principali
+
+- registrazione pubblica e vault separato per account;
+- vista focus e griglia, ricerca, riordino drag-and-drop e duplicazione camere;
+- configurazione guidata di video HLS e gateway PTZ;
+- verifica collegamenti, live a bassa latenza, snapshot e clip locali;
+- tema chiaro/scuro/sistema, modalità compatta e preferenze sincronizzate;
+- timeline account cifrata e persistente;
+- cambio password con revoca delle altre sessioni ed eliminazione account;
+- PWA responsive con navigazione mobile;
+- CSP, anti-iframe, no-sniff, Referrer-Policy e Permissions-Policy su Render.
+
 ```text
 IPC365 RTSP -> FFmpeg bridge -> MediaMTX nella LAN -> HLS (.m3u8)
                                       |
@@ -82,6 +94,10 @@ Il gateway espone registrazione pubblica, login e vault separati:
 - `POST /api/auth/register` crea un account con username, email e password;
 - `POST /api/auth/login` restituisce una sessione firmata con scadenza;
 - `GET/PUT /api/cameras` accede soltanto alle camere dell'utente autenticato;
+- `GET/PUT /api/preferences` sincronizza tema, vista e densita' dell'interfaccia;
+- `GET/DELETE /api/events` gestisce la timeline cifrata dell'account;
+- `PUT /api/account/password` cambia password e revoca le sessioni precedenti;
+- `DELETE /api/account` elimina account e vault dopo conferma password;
 - password account hashate con PBKDF2-SHA256;
 - password HLS e token PTZ cifrati a riposo con AES-256-GCM;
 - limiti per IP su registrazione e login, oltre a un limite globale utenti.

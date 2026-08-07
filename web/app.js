@@ -2,52 +2,56 @@
 
 (() => {
   const defaults = window.APP_CONFIG || {};
-  const AUTH_KEY = 'fredi-auth-v1';
-  const LAST_USER_KEY = 'fredi-last-user';
-  const EVENT_KEY = 'fredi-events-v2';
   const gatewayBase = String(defaults.apiBaseUrl || 'https://control.nelloonrender.duckdns.org').replace(/\/$/, '');
+  const AUTH_KEY = 'fredi-auth-v2';
+  const LAST_USER_KEY = 'fredi-last-user';
   const $ = (id) => document.getElementById(id);
   const player = $('player');
-  let auth = JSON.parse(localStorage.getItem(AUTH_KEY) || 'null');
+
+  let auth = safeJson(localStorage.getItem(AUTH_KEY), null);
+  let account = null;
   let cameras = [];
+  let events = [];
+  let preferences = { theme:'dark', cameraView:'focus', compact:false };
   let activeId = '';
   let editingId = '';
-  let hls;
-  let mediaRecorder;
-  let chunks = [];
-  let toastTimer;
-  let deferredInstallPrompt;
   let authMode = 'login';
-  const eventLog = JSON.parse(localStorage.getItem(EVENT_KEY) || '[]');
+  let searchText = '';
+  let hls = null;
+  let mediaRecorder = null;
+  let chunks = [];
+  let toastTimer = null;
+  let deferredInstallPrompt = null;
+  let draggedId = '';
 
-  function toast(message) {
-    $('toast').textContent = message;
-    $('toast').classList.add('show');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => $('toast').classList.remove('show'), 3600);
+  function safeJson(value, fallback) {
+    try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
   }
 
   function escapeHtml(value) {
-    return String(value).replace(/[&<>'"]/g, (character) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[character]);
+    return String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[character]);
   }
 
-  function renderEvents() {
-    if (!eventLog.length) {
-      $('events').innerHTML = '<div class="recording-empty">Nessun evento recente.</div>';
-      return;
-    }
-    $('events').innerHTML = eventLog.map((item) => `<div class="event"><i class="event-dot ${escapeHtml(item.type)}"></i><div><b>${escapeHtml(item.title)}</b><div class="sub">${escapeHtml(item.detail)}</div></div><time class="event-time">${escapeHtml(item.time)}</time></div>`).join('');
+  function icon(name) {
+    return `<svg aria-hidden="true"><use href="#i-${name}"/></svg>`;
   }
 
-  function addEvent(title, detail, type = '') {
-    eventLog.unshift({ title, detail, type, time:new Date().toLocaleTimeString('it-IT', { hour:'2-digit', minute:'2-digit' }) });
-    eventLog.splice(25);
-    localStorage.setItem(EVENT_KEY, JSON.stringify(eventLog));
-    renderEvents();
+  function toast(message, type = '') {
+    const node = $('toast');
+    node.textContent = message;
+    node.className = `toast show ${type}`.trim();
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { node.className = 'toast'; }, 3800);
   }
 
-  function currentCamera() {
-    return cameras.find((camera) => camera.id === activeId) || null;
+  function setLoading(show, text = 'Sincronizzazione vault…') {
+    $('loadingOverlay').hidden = !show;
+    $('loadingOverlay').querySelector('p').textContent = text;
+  }
+
+  function setConnection(state, text) {
+    $('connectionPill').className = `connection-pill ${state || ''}`.trim();
+    $('statusText').textContent = text;
   }
 
   function authHeaders(extra = {}) {
@@ -61,431 +65,553 @@
       headers:authHeaders(options.headers || {}),
     });
     const result = await response.json().catch(() => ({}));
-    if (response.status === 401 && path !== '/api/auth/login') {
+    if (response.status === 401 && result.error === 'Unauthorized' && !path.startsWith('/api/auth/')) {
       logout(false);
-      throw new Error('Sessione scaduta: accedi di nuovo.');
+      throw new Error('Sessione scaduta. Accedi nuovamente.');
     }
     if (!response.ok) throw new Error(result.detail || result.error || `Errore gateway (${response.status})`);
     return result;
   }
 
-  function createAuthUi() {
-    document.body.insertAdjacentHTML('beforeend', `
-      <section class="auth-gate" id="authGate">
-        <form class="auth-card" id="loginForm">
-          <div class="auth-brand"><div class="logo">◉</div><div><h2 id="authTitle">Accedi a FREDI Control</h2><p id="authSubtitle">Apri il tuo archivio cifrato di telecamere.</p></div></div>
-          <div class="field"><label for="loginUsername">Utente</label><input id="loginUsername" autocomplete="username" required maxlength="128"></div>
-          <div class="field" id="registerEmailField" hidden><label for="registerEmail">Email</label><input id="registerEmail" type="email" autocomplete="email" maxlength="254"></div>
-          <div class="field"><label for="loginPassword">Password</label><input id="loginPassword" type="password" autocomplete="current-password" required maxlength="256"></div>
-          <div class="field" id="registerConfirmField" hidden><label for="registerConfirm">Ripeti password</label><input id="registerConfirm" type="password" autocomplete="new-password" maxlength="256"></div>
-          <button class="primary auth-submit" id="loginButton" type="submit">Accedi</button>
-          <div class="auth-error" id="loginError" role="alert"></div>
-          <button class="secondary auth-submit" id="authModeButton" type="button">Non hai un account? Registrati</button>
-          <p>Le configurazioni sono cifrate sul gateway domestico e non vengono salvate su Render o GitHub.</p>
-        </form>
-      </section>`);
-    $('loginUsername').value = localStorage.getItem(LAST_USER_KEY) || '';
-    $('loginForm').addEventListener('submit', login);
-    $('authModeButton').addEventListener('click', () => setAuthMode(authMode === 'login' ? 'register' : 'login'));
-
-    const accountButton = document.createElement('button');
-    accountButton.className = 'icon-btn account-button';
-    accountButton.id = 'accountButton';
-    accountButton.type = 'button';
-    accountButton.innerHTML = '<span class="account-badge">U</span><span class="account-name">Esci</span>';
-    accountButton.hidden = true;
-    accountButton.addEventListener('click', () => logout(true));
-    document.querySelector('.top-actions').prepend(accountButton);
-  }
-
   function setAuthMode(mode) {
     authMode = mode;
-    const registering = mode === 'register';
-    $('authTitle').textContent = registering ? 'Crea il tuo account' : 'Accedi a FREDI Control';
-    $('authSubtitle').textContent = registering ? 'Ogni account ha un archivio di camere separato.' : 'Apri il tuo archivio cifrato di telecamere.';
-    $('registerEmailField').hidden = !registering;
-    $('registerConfirmField').hidden = !registering;
-    $('registerEmail').required = registering;
-    $('registerConfirm').required = registering;
-    $('loginPassword').autocomplete = registering ? 'new-password' : 'current-password';
-    $('loginButton').textContent = registering ? 'Crea account' : 'Accedi';
-    $('authModeButton').textContent = registering ? 'Hai già un account? Accedi' : 'Non hai un account? Registrati';
+    const register = mode === 'register';
+    $('authEyebrow').textContent = register ? 'Registrazione pubblica' : 'Bentornato';
+    $('authTitle').textContent = register ? 'Crea il tuo spazio' : 'Accedi al tuo spazio';
+    $('authSubtitle').textContent = register ? 'Il tuo vault sarà separato da quello degli altri utenti.' : 'Inserisci username o email e la tua password.';
+    $('registerEmailField').hidden = !register;
+    $('registerConfirmField').hidden = !register;
+    $('termsRow').hidden = !register;
+    $('registerEmail').required = register;
+    $('registerConfirm').required = register;
+    $('termsInput').required = register;
+    $('loginPassword').autocomplete = register ? 'new-password' : 'current-password';
+    $('passwordMeter').hidden = !register;
+    $('loginButton').textContent = register ? 'Crea account' : 'Accedi';
+    $('authModeButton').textContent = register ? 'Hai già un account? Accedi' : 'Non hai un account? Registrati';
     $('loginError').textContent = '';
   }
 
-  async function login(event) {
+  function updatePasswordMeter() {
+    const password = $('loginPassword').value;
+    let strength = 0;
+    if (password.length >= 12) strength += 35;
+    if (password.length >= 16) strength += 20;
+    if (/[A-Z]/.test(password) && /[a-z]/.test(password)) strength += 15;
+    if (/\d/.test(password)) strength += 15;
+    if (/[^A-Za-z0-9]/.test(password)) strength += 15;
+    const level = strength < 35 ? 0 : strength < 55 ? 25 : strength < 75 ? 50 : strength < 95 ? 75 : 100;
+    $('passwordMeter').className = `password-meter strength-${level}`;
+    $('passwordMeter').querySelector('span').textContent = strength < 50 ? 'Debole: usa almeno 12 caratteri' : strength < 80 ? 'Buona password' : 'Password robusta';
+  }
+
+  async function submitAuth(event) {
     event.preventDefault();
-    const button = $('loginButton');
     const username = $('loginUsername').value.trim();
     const password = $('loginPassword').value;
+    const button = $('loginButton');
     $('loginError').textContent = '';
+    if (authMode === 'register') {
+      if (!$('termsInput').checked) return void ($('loginError').textContent = 'Accetta le condizioni di archiviazione per continuare.');
+      if (password.length < 12) return void ($('loginError').textContent = 'La password deve contenere almeno 12 caratteri.');
+      if (password !== $('registerConfirm').value) return void ($('loginError').textContent = 'Le password non coincidono.');
+    }
     button.disabled = true;
-    button.textContent = authMode === 'register' ? 'Creazione…' : 'Accesso…';
+    button.textContent = authMode === 'register' ? 'Creazione account…' : 'Accesso…';
     try {
-      if (authMode === 'register' && password !== $('registerConfirm').value) throw new Error('Le due password non coincidono.');
-      if (authMode === 'register' && password.length < 12) throw new Error('La password deve contenere almeno 12 caratteri.');
       const path = authMode === 'register' ? '/api/auth/register' : '/api/auth/login';
       const payload = authMode === 'register' ? { username, email:$('registerEmail').value.trim(), password } : { username, password };
-      const result = await fetch(`${gatewayBase}${path}`, {
-        method:'POST',
-        cache:'no-store',
-        headers:{ 'Content-Type':'application/json' },
-        body:JSON.stringify(payload),
-      });
-      const data = await result.json().catch(() => ({}));
-      if (!result.ok) throw new Error(data.error || 'Accesso non riuscito.');
-      auth = { token:data.token, username:data.account.username, expiresAt:data.expiresAt };
+      const response = await fetch(`${gatewayBase}${path}`, { method:'POST', cache:'no-store', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify(payload) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'Accesso non riuscito.');
+      auth = { token:result.token, expiresAt:result.expiresAt };
+      account = result.account;
       localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
       localStorage.setItem(LAST_USER_KEY, username);
       $('loginPassword').value = '';
+      $('registerConfirm').value = '';
       await enterDashboard();
     } catch (error) {
-      $('loginError').textContent = error.message;
+      $('loginError').textContent = translateError(error.message);
     } finally {
       button.disabled = false;
       button.textContent = authMode === 'register' ? 'Crea account' : 'Accedi';
     }
   }
 
-  function logout(showMessage) {
-    auth = null;
-    cameras = [];
-    activeId = '';
-    localStorage.removeItem(AUTH_KEY);
-    disconnectStream();
-    $('authGate').hidden = false;
-    $('accountButton').hidden = true;
-    if (showMessage) $('loginError').textContent = 'Sessione chiusa correttamente.';
-  }
-
-  function migratedDefaultCameras() {
-    const legacyText = localStorage.getItem('camera-control-v2');
-    if (!legacyText) return [];
-    const legacy = JSON.parse(legacyText || '{}');
-    return [
-      {
-        id:crypto.randomUUID(),
-        name:legacy.cameraName || defaults.cameraName || 'IPC365 · 1080p',
-        model:'IPC365 · ONVIF',
-        streamUrl:legacy.streamUrl || '',
-        streamUsername:legacy.streamUsername || '',
-        streamPassword:sessionStorage.getItem('camera-stream-password') || '',
-        apiBaseUrl:legacy.apiBaseUrl || gatewayBase,
-        apiToken:sessionStorage.getItem('camera-api-token') || '',
-        ptz:true,
-      },
-    ];
+  function translateError(message) {
+    const translations = {
+      'Invalid username or password':'Username/email o password non validi.',
+      'Username already registered':'Username già registrato.',
+      'Email already registered':'Email già registrata.',
+      'Too many login attempts. Try again later.':'Troppi tentativi. Riprova più tardi.',
+      'Too many registrations. Try again later.':'Troppe registrazioni dalla rete. Riprova più tardi.',
+    };
+    return translations[message] || message;
   }
 
   async function enterDashboard() {
-    const session = await gatewayFetch('/api/auth/session');
-    auth.username = session.account.username;
-    auth.expiresAt = session.expiresAt;
-    localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
-    $('authGate').hidden = true;
-    $('accountButton').hidden = false;
-    $('accountButton').querySelector('.account-badge').textContent = auth.username.slice(0, 1).toUpperCase();
-    $('accountButton').querySelector('.account-name').textContent = `${auth.username} · Esci`;
-    const vault = await gatewayFetch('/api/cameras');
-    cameras = Array.isArray(vault.cameras) ? vault.cameras : [];
-    if (!cameras.length) {
-      cameras = migratedDefaultCameras();
-      if (cameras.length) await saveCameras();
-      sessionStorage.removeItem('camera-stream-password');
-      sessionStorage.removeItem('camera-api-token');
+    setLoading(true, 'Apertura del vault…');
+    try {
+      const session = await gatewayFetch('/api/auth/session');
+      account = session.account;
+      auth.expiresAt = session.expiresAt;
+      localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
+      const vault = await gatewayFetch('/api/cameras');
+      cameras = Array.isArray(vault.cameras) ? vault.cameras : [];
+      events = Array.isArray(vault.events) ? vault.events : [];
+      preferences = { ...preferences, ...(vault.preferences || {}) };
+      const migrated = migrateLegacyCamera();
+      if (!cameras.length && migrated) {
+        cameras = [migrated];
+        await persistCameras('Configurazione precedente importata.');
+      }
+      activeId = cameras.some((camera) => camera.id === activeId) ? activeId : cameras[0]?.id || '';
+      applyPreferences();
+      renderAccount();
+      renderAll();
+      $('authGate').hidden = true;
+      $('appShell').hidden = false;
+      setConnection('', 'Vault sincronizzato');
+    } finally {
+      setLoading(false);
     }
-    activeId = cameras.some((camera) => camera.id === activeId) ? activeId : cameras[0]?.id || '';
-    renderCameraSwitch();
-    if (activeId) selectCamera(activeId); else offline('Aggiungi la tua prima camera.');
   }
 
-  async function saveCameras() {
-    const result = await gatewayFetch('/api/cameras', {
-      method:'PUT',
-      headers:{ 'Content-Type':'application/json' },
-      body:JSON.stringify({ cameras }),
-    });
-    cameras = result.cameras;
+  function migrateLegacyCamera() {
+    const legacyText = localStorage.getItem('camera-control-v2');
+    if (!legacyText) return null;
+    const legacy = safeJson(legacyText, {});
+    localStorage.removeItem('camera-control-v2');
+    return {
+      id:crypto.randomUUID(), name:legacy.cameraName || 'Camera importata', model:'Configurazione precedente',
+      streamUrl:legacy.streamUrl || '', streamUsername:legacy.streamUsername || '', streamPassword:sessionStorage.getItem('camera-stream-password') || '',
+      apiBaseUrl:legacy.apiBaseUrl || '', apiToken:sessionStorage.getItem('camera-api-token') || '', ptz:Boolean(legacy.apiBaseUrl),
+    };
   }
 
-  function renderCameraSwitch() {
-    const container = document.querySelector('.camera-switch');
+  function logout(showMessage = true) {
+    disconnectStream();
+    auth = null; account = null; cameras = []; events = []; activeId = '';
+    localStorage.removeItem(AUTH_KEY);
+    $('appShell').hidden = true;
+    $('authGate').hidden = false;
+    $('accountDialog').open && $('accountDialog').close();
+    if (showMessage) $('loginError').textContent = 'Sessione chiusa correttamente.';
+  }
+
+  function renderAccount() {
+    const initial = account.username.slice(0, 1).toUpperCase();
+    $('accountInitial').textContent = initial;
+    $('accountName').textContent = account.username;
+    $('profileInitial').textContent = initial;
+    $('profileUsername').textContent = account.username;
+    $('profileEmail').textContent = account.email;
+    $('welcomeTitle').textContent = `Ciao ${account.username}, tutto sotto controllo.`;
+  }
+
+  function filteredCameras() {
+    if (!searchText) return cameras;
+    return cameras.filter((camera) => `${camera.name} ${camera.model}`.toLowerCase().includes(searchText));
+  }
+
+  function currentCamera() {
+    return cameras.find((camera) => camera.id === activeId) || null;
+  }
+
+  function renderAll() {
+    renderStats();
+    renderSwitcher();
+    renderGrid();
+    renderEvents();
+    renderView();
+    const camera = currentCamera();
+    if (camera) updateFocusedCamera(camera); else showEmptyWorkspace();
+  }
+
+  function renderStats() {
+    const configured = cameras.filter((camera) => camera.streamUrl).length;
+    const ptz = cameras.filter((camera) => camera.ptz && camera.apiBaseUrl && camera.apiToken).length;
+    $('statCameras').textContent = cameras.length;
+    $('statConfigured').textContent = configured;
+    $('statPtz').textContent = ptz;
+    $('cameraCountLabel').textContent = cameras.length === 1 ? '1 camera nel vault' : `${cameras.length} camere nel vault`;
+  }
+
+  function renderSwitcher() {
+    const container = $('cameraSwitcher');
     container.innerHTML = '';
-    for (const camera of cameras) {
+    for (const camera of filteredCameras()) {
       const wrap = document.createElement('div');
       wrap.className = 'camera-chip-wrap';
-      const select = document.createElement('button');
-      select.type = 'button';
-      select.className = `camera-chip${camera.id === activeId ? ' active' : ''}`;
-      select.innerHTML = `<b>${camera.streamUrl ? '●' : '○'} ${escapeHtml(camera.name)}</b><span>${escapeHtml(camera.model || (camera.streamUrl ? 'HLS configurato' : 'Da configurare'))}</span>`;
-      select.addEventListener('click', () => selectCamera(camera.id));
-      select.addEventListener('dblclick', () => openSettings(camera.id));
+      wrap.draggable = true;
+      wrap.dataset.id = camera.id;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `camera-chip${camera.id === activeId ? ' active' : ''}`;
+      button.innerHTML = `<b>${camera.streamUrl ? '●' : '○'} ${escapeHtml(camera.name)}</b><span>${escapeHtml(camera.model || 'Nessun modello')}</span>`;
+      button.addEventListener('click', () => selectCamera(camera.id));
       const edit = document.createElement('button');
-      edit.type = 'button';
-      edit.className = 'camera-chip-edit';
-      edit.title = `Modifica ${camera.name}`;
-      edit.setAttribute('aria-label', `Modifica ${camera.name}`);
-      edit.textContent = '⚙';
-      edit.addEventListener('click', () => openSettings(camera.id));
-      wrap.append(select, edit);
-      container.append(wrap);
+      edit.type = 'button'; edit.className = 'camera-chip-edit'; edit.title = `Modifica ${camera.name}`; edit.innerHTML = icon('edit');
+      edit.addEventListener('click', () => openCameraDialog(camera.id));
+      bindDrag(wrap);
+      wrap.append(button, edit); container.append(wrap);
     }
-    const add = document.createElement('button');
-    add.type = 'button';
-    add.className = 'camera-chip add';
-    add.textContent = '＋ Aggiungi camera';
-    add.addEventListener('click', () => openSettings(''));
-    container.append(add);
+  }
+
+  function renderGrid() {
+    const container = $('gridView');
+    container.innerHTML = '';
+    for (const camera of filteredCameras()) {
+      const card = document.createElement('article');
+      card.className = 'grid-card'; card.draggable = true; card.dataset.id = camera.id;
+      card.innerHTML = `<div class="grid-preview">${icon('camera')}</div><div class="grid-card-body"><div class="grid-card-head"><div><h3>${escapeHtml(camera.name)}</h3><p>${escapeHtml(camera.model || 'Modello non indicato')}</p></div><span class="live-badge">${camera.streamUrl ? 'PRONTA' : 'SETUP'}</span></div><div class="grid-tags"><span class="tag ${camera.streamUrl ? 'ok' : ''}">${camera.streamUrl ? 'HLS' : 'NO VIDEO'}</span><span class="tag ${camera.ptz && camera.apiToken ? 'ok' : ''}">${camera.ptz ? 'PTZ' : 'SOLO VIDEO'}</span><span class="tag">VAULT</span></div><div class="grid-actions"><button class="button secondary" data-open="${camera.id}">${icon('focus')} Apri</button><button class="button ghost" data-edit="${camera.id}">${icon('edit')} Modifica</button><button class="button ghost" data-copy="${camera.id}" title="Duplica">Copia</button></div></div>`;
+      card.querySelector('[data-open]').addEventListener('click', () => { setView('focus'); selectCamera(camera.id); });
+      card.querySelector('[data-edit]').addEventListener('click', () => openCameraDialog(camera.id));
+      card.querySelector('[data-copy]').addEventListener('click', () => duplicateCamera(camera.id));
+      bindDrag(card); container.append(card);
+    }
+  }
+
+  function bindDrag(node) {
+    node.addEventListener('dragstart', () => { draggedId = node.dataset.id; });
+    node.addEventListener('dragover', (event) => event.preventDefault());
+    node.addEventListener('drop', async (event) => {
+      event.preventDefault();
+      const targetId = node.dataset.id;
+      if (!draggedId || draggedId === targetId) return;
+      const from = cameras.findIndex((camera) => camera.id === draggedId);
+      const to = cameras.findIndex((camera) => camera.id === targetId);
+      const [moved] = cameras.splice(from, 1); cameras.splice(to, 0, moved);
+      draggedId = ''; renderAll();
+      try { await persistCameras('Ordine camere aggiornato.'); } catch (error) { toast(error.message, 'error'); }
+    });
+  }
+
+  function renderView() {
+    const empty = cameras.length === 0;
+    $('emptyWorkspace').hidden = !empty;
+    $('focusView').hidden = empty || preferences.cameraView !== 'focus';
+    $('gridView').hidden = empty || preferences.cameraView !== 'grid';
+    $('viewFocus').classList.toggle('active', preferences.cameraView === 'focus');
+    $('viewGrid').classList.toggle('active', preferences.cameraView === 'grid');
+  }
+
+  function showEmptyWorkspace() {
+    disconnectStream();
+    $('focusView').hidden = true;
+    $('gridView').hidden = true;
+    $('emptyWorkspace').hidden = false;
   }
 
   function selectCamera(id) {
-    const camera = cameras.find((item) => item.id === id);
-    if (!camera) return;
+    if (!cameras.some((camera) => camera.id === id)) return;
     activeId = id;
-    renderCameraSwitch();
-    $('cameraName').textContent = camera.name;
-    document.querySelector('.camera-meta').textContent = camera.model || 'Gateway HLS HTTPS';
-    document.querySelectorAll('[data-ptz]').forEach((button) => { button.disabled = !camera.ptz; });
+    renderSwitcher();
+    updateFocusedCamera(currentCamera());
+  }
+
+  function updateFocusedCamera(camera) {
     disconnectStream();
-    if (camera.streamUrl) connectStream(camera);
-    else offline('Camera non ancora configurata.');
+    $('cameraName').textContent = camera.name;
+    $('cameraMeta').textContent = camera.model || 'Modello non specificato';
+    $('detailVideo').textContent = camera.streamUrl ? 'HLS configurato' : 'Non configurato';
+    $('detailPtz').textContent = camera.ptz && camera.apiBaseUrl && camera.apiToken ? 'Attivo' : 'Non configurato';
+    $('detailCredentials').textContent = camera.streamUsername ? 'Basic Auth' : 'Nessuna';
+    const ptzReady = camera.ptz && camera.apiBaseUrl && camera.apiToken;
+    $('ptzState').textContent = ptzReady ? 'Pronto' : 'Non configurato';
+    document.querySelectorAll('[data-ptz]').forEach((button) => { button.disabled = !ptzReady; });
+    if (camera.streamUrl) connectStream(camera); else offline('Sorgente video non configurata.', 'Apri le impostazioni e inserisci un URL HLS HTTPS.');
+  }
+
+  function setVideoLoading(show) {
+    $('videoLoading').hidden = !show;
   }
 
   function disconnectStream() {
-    hls?.destroy();
-    hls = null;
-    player.pause();
-    player.removeAttribute('src');
-    player.load();
+    hls?.destroy(); hls = null;
+    player.pause(); player.removeAttribute('src'); player.load();
     $('stage').classList.remove('playing');
+    $('cameraStatusDot').classList.remove('live');
+    $('liveTag').className = 'live-badge'; $('liveTag').textContent = 'OFFLINE';
+    setVideoLoading(false);
   }
 
   function connectStream(camera) {
-    $('gatewayState').textContent = 'Connessione…';
+    setVideoLoading(true);
+    $('emptyTitle').textContent = 'Connessione in corso';
+    $('emptyText').textContent = 'Il gateway sta preparando il flusso live.';
     const authorization = camera.streamUsername && camera.streamPassword ? `Basic ${btoa(`${camera.streamUsername}:${camera.streamPassword}`)}` : '';
     if (window.Hls && Hls.isSupported()) {
-      hls = new Hls({
-        lowLatencyMode:true,
-        liveSyncDurationCount:2,
-        xhrSetup:(xhr) => { if (authorization) xhr.setRequestHeader('Authorization', authorization); },
-      });
-      hls.loadSource(camera.streamUrl);
-      hls.attachMedia(player);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => player.play().catch(() => toast('Tocca il video per avviare il live.')));
-      hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) offline('HLS non raggiungibile o credenziali errate.'); });
+      hls = new Hls({ lowLatencyMode:true, liveSyncDurationCount:2, backBufferLength:10, xhrSetup:(xhr) => { if (authorization) xhr.setRequestHeader('Authorization', authorization); } });
+      hls.loadSource(camera.streamUrl); hls.attachMedia(player);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => player.play().catch(() => { setVideoLoading(false); toast('Tocca il video per avviare il live.'); }));
+      hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) { setVideoLoading(false); offline('Live non raggiungibile.', 'Controlla URL, CORS e credenziali HLS.'); } });
     } else if (player.canPlayType('application/vnd.apple.mpegurl') && !authorization) {
-      player.src = camera.streamUrl;
-      player.play().catch(() => {});
+      player.src = camera.streamUrl; player.play().catch(() => setVideoLoading(false));
     } else {
-      offline('Il browser non supporta HLS autenticato.');
+      setVideoLoading(false); offline('HLS autenticato non supportato.', 'Prova un browser compatibile con hls.js.');
     }
   }
 
-  function offline(message) {
-    $('gatewayState').textContent = 'Non raggiungibile';
-    $('gatewayState').className = 'pending';
-    $('statusText').textContent = message || 'Gateway non raggiungibile';
-    $('statusDot').classList.remove('live');
-    $('liveTag').textContent = 'OFFLINE';
+  function offline(title, detail) {
     $('stage').classList.remove('playing');
+    $('emptyTitle').textContent = title;
+    $('emptyText').textContent = detail;
+    $('liveTag').className = 'live-badge'; $('liveTag').textContent = 'OFFLINE';
+    $('cameraStatusDot').classList.remove('live');
   }
 
-  function prepareSettingsDialog() {
-    const dialog = $('settingsDialog');
-    dialog.querySelector('h2').textContent = 'Configura camera';
-    $('apiTokenInput').closest('.field').hidden = false;
-    $('apiInput').closest('.field').querySelector('label').textContent = 'URL API gateway';
-    $('streamPasswordInput').placeholder = 'Salvata cifrata nel tuo account';
-    $('apiTokenInput').placeholder = 'Salvato cifrato nel tuo account';
-    dialog.querySelector('.notice').textContent = 'Password HLS, token PTZ e configurazione vengono cifrati nel vault del tuo account. Render e GitHub non ricevono questi dati.';
-    const ptzRow = document.createElement('label');
-    ptzRow.className = 'field-check';
-    ptzRow.innerHTML = '<input id="ptzInput" type="checkbox"> Abilita controlli PTZ per questa camera';
-    $('apiInput').closest('.field').after(ptzRow);
-    const footer = dialog.querySelector('.modal-foot');
-    footer.className = 'settings-actions';
-    const deleteButton = document.createElement('button');
-    deleteButton.type = 'button';
-    deleteButton.id = 'deleteCamera';
-    deleteButton.className = 'danger-button';
-    deleteButton.textContent = 'Elimina camera';
-    footer.prepend(deleteButton);
-    $('saveSettings').type = 'button';
-    $('saveSettings').addEventListener('click', saveSettings);
-    deleteButton.addEventListener('click', deleteCamera);
-    $('settingsButton').addEventListener('click', () => openSettings(activeId));
+  function renderEvents() {
+    const container = $('events');
+    if (!events.length) { container.innerHTML = '<div class="recording-empty"><p>Nessuna attività recente.</p></div>'; return; }
+    container.innerHTML = events.slice(0, 8).map((item) => {
+      const date = new Date(item.createdAt);
+      return `<div class="event-row"><i class="event-dot ${escapeHtml(item.type)}"></i><div><b>${escapeHtml(item.title)}</b><p>${escapeHtml(item.detail)}</p></div><time title="${escapeHtml(date.toLocaleString('it-IT'))}">${escapeHtml(relativeTime(date))}</time></div>`;
+    }).join('');
   }
 
-  function openSettings(id) {
-    const camera = cameras.find((item) => item.id === id) || { name:'', model:'', streamUrl:'', streamUsername:'', streamPassword:'', apiBaseUrl:'', apiToken:'', ptz:false };
+  function relativeTime(date) {
+    const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+    if (seconds < 60) return 'ora'; if (seconds < 3600) return `${Math.floor(seconds / 60)} min`; if (seconds < 86400) return `${Math.floor(seconds / 3600)} h`; return `${Math.floor(seconds / 86400)} g`;
+  }
+
+  function openCameraDialog(id = '') {
     editingId = id;
-    $('settingsDialog').querySelector('h2').textContent = id ? `Modifica ${camera.name}` : 'Aggiungi camera';
-    $('nameInput').value = camera.name;
-    $('streamInput').value = camera.streamUrl;
-    $('streamUsernameInput').value = camera.streamUsername;
-    $('streamPasswordInput').value = camera.streamPassword;
-    $('apiInput').value = camera.apiBaseUrl || '';
-    $('apiTokenInput').value = camera.apiToken || '';
-    $('ptzInput').checked = camera.ptz !== false;
+    const camera = cameras.find((item) => item.id === id) || { name:'', model:'', streamUrl:'', streamUsername:'', streamPassword:'', apiBaseUrl:'', apiToken:'', ptz:false };
+    $('settingsTitle').textContent = id ? `Modifica ${camera.name}` : 'Aggiungi camera';
+    $('nameInput').value = camera.name; $('modelInput').value = camera.model || '';
+    $('streamInput').value = camera.streamUrl || ''; $('streamUsernameInput').value = camera.streamUsername || ''; $('streamPasswordInput').value = camera.streamPassword || '';
+    $('ptzInput').checked = Boolean(camera.ptz); $('apiInput').value = camera.apiBaseUrl || ''; $('apiTokenInput').value = camera.apiToken || '';
     $('deleteCamera').hidden = !id;
-    $('settingsDialog').showModal();
+    updatePtzFields(); setCameraStep('general'); $('settingsDialog').showModal();
   }
 
-  async function saveSettings() {
+  function setCameraStep(step) {
+    document.querySelectorAll('[data-step]').forEach((button) => button.classList.toggle('active', button.dataset.step === step));
+    document.querySelectorAll('[data-panel]').forEach((panel) => panel.classList.toggle('active', panel.dataset.panel === step));
+  }
+
+  function updatePtzFields() {
+    const enabled = $('ptzInput').checked;
+    $('ptzFields').classList.toggle('fields-disabled', !enabled);
+    $('apiInput').disabled = !enabled; $('apiTokenInput').disabled = !enabled;
+  }
+
+  async function saveCamera() {
     const name = $('nameInput').value.trim();
-    if (!name) return toast('Inserisci il nome della camera.');
+    if (!name) { setCameraStep('general'); $('nameInput').focus(); return toast('Inserisci un nome per la camera.', 'error'); }
+    if ($('ptzInput').checked && (!$('apiInput').value.trim() || !$('apiTokenInput').value)) { setCameraStep('control'); return toast('Per il PTZ servono URL gateway e token.', 'error'); }
     const previous = cameras.find((item) => item.id === editingId);
     const camera = {
-      id:editingId || crypto.randomUUID(),
-      name,
-      model:previous?.model || ($('streamInput').value.trim() ? 'HLS configurato' : 'Da configurare'),
-      streamUrl:$('streamInput').value.trim(),
-      streamUsername:$('streamUsernameInput').value.trim(),
-      streamPassword:$('streamPasswordInput').value,
-      apiBaseUrl:$('apiInput').value.trim(),
-      apiToken:$('apiTokenInput').value,
-      ptz:$('ptzInput').checked,
+      id:editingId || crypto.randomUUID(), name, model:$('modelInput').value.trim(), streamUrl:$('streamInput').value.trim(),
+      streamUsername:$('streamUsernameInput').value.trim(), streamPassword:$('streamPasswordInput').value,
+      apiBaseUrl:$('ptzInput').checked ? $('apiInput').value.trim() : '', apiToken:$('ptzInput').checked ? $('apiTokenInput').value : '', ptz:$('ptzInput').checked,
     };
+    const backup = [...cameras];
     const index = cameras.findIndex((item) => item.id === camera.id);
     if (index >= 0) cameras[index] = camera; else cameras.push(camera);
+    activeId = camera.id;
+    setLoading(true, 'Salvataggio camera…');
     try {
-      await saveCameras();
-      activeId = camera.id;
-      $('settingsDialog').close();
-      renderCameraSwitch();
-      selectCamera(activeId);
-      toast('Camera salvata nel vault cifrato.');
-    } catch (error) {
-      toast(error.message);
-    }
+      await persistCameras();
+      $('settingsDialog').close(); renderAll(); selectCamera(activeId);
+      toast(previous ? 'Camera aggiornata nel vault.' : 'Camera aggiunta al vault.', 'success');
+    } catch (error) { cameras = backup; toast(error.message, 'error'); }
+    finally { setLoading(false); }
+  }
+
+  async function persistCameras() {
+    setConnection('busy', 'Sincronizzazione…');
+    const result = await gatewayFetch('/api/cameras', { method:'PUT', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ cameras }) });
+    cameras = result.cameras || cameras; events = result.events || events; preferences = { ...preferences, ...(result.preferences || {}) };
+    setConnection('', 'Vault sincronizzato'); renderStats(); renderEvents();
   }
 
   async function deleteCamera() {
     const camera = cameras.find((item) => item.id === editingId);
-    if (!camera || !confirm(`Eliminare ${camera.name}?`)) return;
-    const backup = cameras;
-    cameras = cameras.filter((item) => item.id !== editingId);
-    try {
-      await saveCameras();
-      activeId = cameras[0]?.id || '';
-      $('settingsDialog').close();
-      renderCameraSwitch();
-      if (activeId) selectCamera(activeId); else offline('Aggiungi una camera.');
-      toast('Camera eliminata.');
-    } catch (error) {
-      cameras = backup;
-      toast(error.message);
-    }
+    if (!camera || !confirm(`Eliminare definitivamente “${camera.name}”?`)) return;
+    const backup = [...cameras]; cameras = cameras.filter((item) => item.id !== camera.id); activeId = cameras[0]?.id || '';
+    setLoading(true, 'Eliminazione camera…');
+    try { await persistCameras(); $('settingsDialog').close(); renderAll(); toast('Camera eliminata.', 'success'); }
+    catch (error) { cameras = backup; toast(error.message, 'error'); }
+    finally { setLoading(false); }
   }
 
-  async function actionFromGateway(path, body) {
+  async function duplicateCamera(id) {
+    const source = cameras.find((camera) => camera.id === id); if (!source) return;
+    const duplicate = { ...source, id:crypto.randomUUID(), name:`${source.name} copia` };
+    cameras.push(duplicate); activeId = duplicate.id;
+    try { await persistCameras(); renderAll(); toast('Camera duplicata.', 'success'); }
+    catch (error) { cameras.pop(); toast(error.message, 'error'); }
+  }
+
+  async function testStreamValues(url, username, password) {
+    if (!url) throw new Error('Inserisci prima un URL HLS.');
+    const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 9000);
+    try {
+      const headers = username && password ? { Authorization:`Basic ${btoa(`${username}:${password}`)}` } : {};
+      const response = await fetch(url, { method:'GET', headers, cache:'no-store', signal:controller.signal });
+      if (!response.ok) throw new Error(`Il server video risponde HTTP ${response.status}.`);
+      const text = await response.text();
+      if (!text.includes('#EXTM3U')) throw new Error('La risposta non sembra una playlist HLS.');
+      return true;
+    } finally { clearTimeout(timeout); }
+  }
+
+  async function testCurrentCamera() {
+    const camera = currentCamera(); if (!camera) return;
+    setLoading(true, 'Verifica collegamenti…');
+    try {
+      if (camera.streamUrl) await testStreamValues(camera.streamUrl, camera.streamUsername, camera.streamPassword);
+      if (camera.ptz && camera.apiBaseUrl) {
+        const response = await fetch(`${camera.apiBaseUrl.replace(/\/$/, '')}/health`, { cache:'no-store' });
+        if (!response.ok) throw new Error(`Gateway PTZ non raggiungibile (${response.status}).`);
+      }
+      toast('Configurazione raggiungibile.', 'success');
+    } catch (error) { toast(error.name === 'AbortError' ? 'Verifica scaduta: gateway troppo lento.' : error.message, 'error'); }
+    finally { setLoading(false); }
+  }
+
+  async function sendPtz(action) {
     const camera = currentCamera();
-    if (!camera?.ptz) throw new Error('PTZ non abilitato per questa camera.');
-    if (!camera.apiBaseUrl || !camera.apiToken) throw new Error('Configura URL e token PTZ per questa camera.');
-    const base = String(camera.apiBaseUrl).replace(/\/$/, '');
-    const response = await fetch(`${base}${path}`, {
-      method:'POST',
-      cache:'no-store',
-      headers:{ 'Content-Type':'application/json', Authorization:`Bearer ${camera.apiToken}` },
-      body:JSON.stringify(body),
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result.detail || result.error || 'Comando PTZ rifiutato.');
-    return result;
+    if (!camera?.ptz || !camera.apiBaseUrl || !camera.apiToken) return toast('PTZ non configurato per questa camera.', 'error');
+    try {
+      const response = await fetch(`${camera.apiBaseUrl.replace(/\/$/, '')}/api/ptz`, { method:'POST', cache:'no-store', headers:{ 'Content-Type':'application/json', Authorization:`Bearer ${camera.apiToken}` }, body:JSON.stringify({ action }) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail || result.error || 'Comando rifiutato.');
+      toast(`Movimento ${action} inviato.`);
+    } catch (error) { toast(error.message, 'error'); }
   }
 
   function snapshot() {
     const camera = currentCamera();
-    if (!camera?.streamUrl || !player.videoWidth) return toast('Snapshot disponibile quando il live è attivo.');
-    const canvas = document.createElement('canvas');
-    canvas.width = player.videoWidth;
-    canvas.height = player.videoHeight;
+    if (!camera || !player.videoWidth) return toast('Avvia il live prima dello snapshot.', 'error');
+    const canvas = document.createElement('canvas'); canvas.width = player.videoWidth; canvas.height = player.videoHeight;
     canvas.getContext('2d').drawImage(player, 0, 0);
     canvas.toBlob((blob) => {
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = `${camera.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${Date.now()}.jpg`;
-      link.click();
-      URL.revokeObjectURL(link.href);
-      $('snapshotState').textContent = new Date().toLocaleTimeString('it-IT');
-      toast('Snapshot scaricato.');
-    }, 'image/jpeg', 0.92);
+      const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${slug(camera.name)}-${Date.now()}.jpg`; link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000); $('snapshotState').textContent = new Date().toLocaleTimeString('it-IT'); toast('Snapshot scaricato.', 'success');
+    }, 'image/jpeg', .92);
+  }
+
+  function slug(value) { return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'camera'; }
+
+  function toggleRecording() {
+    if (!player.captureStream || player.paused) return toast('Avvia il live prima di registrare.', 'error');
+    if (mediaRecorder?.state === 'recording') { mediaRecorder.stop(); return; }
+    try {
+      chunks = []; mediaRecorder = new MediaRecorder(player.captureStream(), { mimeType:'video/webm' });
+      mediaRecorder.ondataavailable = (event) => event.data.size && chunks.push(event.data);
+      mediaRecorder.onstart = () => { $('recordButton').classList.add('recording'); $('recordButton').querySelector('span').textContent = 'Ferma'; };
+      mediaRecorder.onstop = () => { $('recordButton').classList.remove('recording'); $('recordButton').querySelector('span').textContent = 'Registra'; addRecording(new Blob(chunks, { type:'video/webm' })); };
+      mediaRecorder.start();
+    } catch { toast('Registrazione non supportata dal browser.', 'error'); }
   }
 
   function addRecording(blob) {
-    const url = URL.createObjectURL(blob);
-    const row = document.createElement('div');
-    row.className = 'recording';
-    row.innerHTML = `<div class="thumb">▶</div><div><b>Clip manuale</b><div class="sub">${new Date().toLocaleString('it-IT')}</div></div><a class="storage-action" href="${url}" download="camera-${Date.now()}.webm">Scarica</a>`;
-    $('recordingEmpty').style.display = 'none';
-    $('recordingList').style.display = 'block';
-    $('recordingList').prepend(row);
+    const url = URL.createObjectURL(blob); const camera = currentCamera();
+    const row = document.createElement('div'); row.className = 'recording';
+    row.innerHTML = `${icon('record')}<div><b>${escapeHtml(camera?.name || 'Camera')}</b><small>${escapeHtml(new Date().toLocaleString('it-IT'))}</small></div><a href="${url}" download="${slug(camera?.name || 'camera')}-${Date.now()}.webm">Scarica</a>`;
+    $('recordingEmpty').hidden = true; $('recordingList').prepend(row); toast('Clip pronta per il download.', 'success');
   }
 
-  function record() {
-    if (!player.captureStream || player.paused) return toast('Avvia prima il live.');
-    const button = $('recordButton');
-    if (mediaRecorder?.state === 'recording') {
-      mediaRecorder.stop();
-      button.classList.remove('active');
-      button.textContent = '⏺ Registra clip';
-      return;
-    }
+  function applyPreferences() {
+    let theme = preferences.theme;
+    if (theme === 'system') theme = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    document.documentElement.dataset.theme = theme;
+    document.body.classList.toggle('compact', Boolean(preferences.compact));
+    $('themeSelect').value = preferences.theme; $('viewSelect').value = preferences.cameraView; $('compactInput').checked = Boolean(preferences.compact);
+    const meta = document.querySelector('meta[name="theme-color"]'); meta.content = theme === 'light' ? '#edf3f9' : '#07111f';
+  }
+
+  async function persistPreferences() {
+    applyPreferences(); renderView();
     try {
-      chunks = [];
-      mediaRecorder = new MediaRecorder(player.captureStream(), { mimeType:'video/webm' });
-      mediaRecorder.ondataavailable = (event) => event.data.size && chunks.push(event.data);
-      mediaRecorder.onstop = () => addRecording(new Blob(chunks, { type:'video/webm' }));
-      mediaRecorder.start();
-      button.classList.add('active');
-      button.textContent = '■ Ferma registrazione';
-    } catch {
-      toast('Registrazione non supportata da questo browser.');
-    }
+      const result = await gatewayFetch('/api/preferences', { method:'PUT', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ preferences }) });
+      preferences = result.preferences; applyPreferences(); toast('Preferenze sincronizzate.', 'success');
+    } catch (error) { toast(error.message, 'error'); }
   }
 
-  function bindControls() {
-    player.addEventListener('playing', () => {
-      $('stage').classList.add('playing');
-      $('statusText').textContent = 'Live connesso';
-      $('statusDot').classList.add('live');
-      $('liveTag').textContent = 'LIVE';
-      $('gatewayState').textContent = 'Online';
-      $('gatewayState').className = '';
-    });
-    player.addEventListener('error', () => offline('Errore nel live.'));
-    document.querySelectorAll('[data-ptz]').forEach((button) => button.addEventListener('click', async () => {
-      try { await actionFromGateway('/api/ptz', { action:button.dataset.ptz }); toast('Comando PTZ inviato.'); }
-      catch (error) { toast(error.message); }
-    }));
-    $('snapshotButton').addEventListener('click', snapshot);
-    $('snapshotTop').addEventListener('click', snapshot);
-    $('recordButton').addEventListener('click', record);
-    $('muteButton').addEventListener('click', () => { player.muted = !player.muted; $('muteButton').textContent = player.muted ? '🔇' : '🔊'; });
+  function setView(view) {
+    preferences.cameraView = view; renderView(); persistPreferences();
+  }
+
+  async function clearEvents() {
+    if (!events.length || !confirm('Pulire la timeline del tuo account?')) return;
+    try { await gatewayFetch('/api/events', { method:'DELETE' }); events = []; renderEvents(); toast('Timeline pulita.', 'success'); }
+    catch (error) { toast(error.message, 'error'); }
+  }
+
+  function openAccount() {
+    renderAccount(); applyPreferences();
+    $('currentPassword').value = ''; $('newPassword').value = ''; $('confirmNewPassword').value = ''; $('deleteAccountPassword').value = '';
+    $('accountDialog').showModal();
+  }
+
+  async function changePassword() {
+    const currentPassword = $('currentPassword').value; const newPassword = $('newPassword').value;
+    if (newPassword.length < 12) return toast('La nuova password deve avere almeno 12 caratteri.', 'error');
+    if (newPassword !== $('confirmNewPassword').value) return toast('Le nuove password non coincidono.', 'error');
+    setLoading(true, 'Aggiornamento password…');
+    try {
+      const result = await gatewayFetch('/api/account/password', { method:'PUT', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ currentPassword, newPassword }) });
+      auth = { token:result.token, expiresAt:result.expiresAt }; localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
+      $('currentPassword').value = ''; $('newPassword').value = ''; $('confirmNewPassword').value = '';
+      toast('Password aggiornata. Le altre sessioni sono state revocate.', 'success');
+    } catch (error) { toast(translateError(error.message), 'error'); }
+    finally { setLoading(false); }
+  }
+
+  async function deleteAccount() {
+    const password = $('deleteAccountPassword').value;
+    if (!password) return toast('Inserisci la password per confermare.', 'error');
+    if (!confirm('Eliminare definitivamente account, camere e vault? Questa azione non è annullabile.')) return;
+    setLoading(true, 'Eliminazione account…');
+    try { await gatewayFetch('/api/account', { method:'DELETE', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ password }) }); $('accountDialog').close(); logout(false); $('loginError').textContent = 'Account eliminato definitivamente.'; }
+    catch (error) { toast(translateError(error.message), 'error'); }
+    finally { setLoading(false); }
+  }
+
+  function bindEvents() {
+    $('loginForm').addEventListener('submit', submitAuth);
+    $('authModeButton').addEventListener('click', () => setAuthMode(authMode === 'login' ? 'register' : 'login'));
+    $('loginPassword').addEventListener('input', updatePasswordMeter);
+    document.querySelectorAll('[data-reveal]').forEach((button) => button.addEventListener('click', () => { const input = $(button.dataset.reveal); input.type = input.type === 'password' ? 'text' : 'password'; button.textContent = input.type === 'password' ? 'Mostra' : 'Nascondi'; }));
+    document.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', () => $(button.dataset.close).close()));
+    document.querySelectorAll('[data-step]').forEach((button) => button.addEventListener('click', () => setCameraStep(button.dataset.step)));
+    $('ptzInput').addEventListener('change', updatePtzFields);
+    $('addCamera').addEventListener('click', () => openCameraDialog()); $('emptyAddCamera').addEventListener('click', () => openCameraDialog()); $('mobileAdd').addEventListener('click', () => openCameraDialog());
+    $('editCurrent').addEventListener('click', () => openCameraDialog(activeId)); $('configureCurrent').addEventListener('click', () => openCameraDialog(activeId));
+    $('saveSettings').addEventListener('click', saveCamera); $('deleteCamera').addEventListener('click', deleteCamera);
+    $('testStreamSettings').addEventListener('click', async () => { setLoading(true, 'Verifica HLS…'); try { await testStreamValues($('streamInput').value.trim(), $('streamUsernameInput').value.trim(), $('streamPasswordInput').value); toast('Playlist HLS raggiungibile.', 'success'); } catch (error) { toast(error.name === 'AbortError' ? 'Verifica scaduta.' : error.message, 'error'); } finally { setLoading(false); } });
+    $('testCurrent').addEventListener('click', testCurrentCamera); $('refreshButton').addEventListener('click', () => currentCamera() && updateFocusedCamera(currentCamera()));
+    document.querySelectorAll('[data-ptz]').forEach((button) => button.addEventListener('click', () => sendPtz(button.dataset.ptz)));
+    $('snapshotButton').addEventListener('click', snapshot); $('recordButton').addEventListener('click', toggleRecording);
+    $('muteButton').addEventListener('click', () => { player.muted = !player.muted; $('muteButton').classList.toggle('unmuted', !player.muted); });
     $('fullButton').addEventListener('click', () => $('stage').requestFullscreen?.());
-    $('speakerButton').addEventListener('click', () => toast('Audio bidirezionale non ancora supportato dalla camera.'));
-    $('qualityButton').addEventListener('click', () => toast('Qualità automatica gestita dal gateway HLS.'));
-    $('clearEvents').addEventListener('click', () => { eventLog.length = 0; localStorage.setItem(EVENT_KEY, '[]'); renderEvents(); });
-    $('notificationButton').addEventListener('click', async () => {
-      if (!('Notification' in window)) return toast('Notifiche non supportate.');
-      const result = await Notification.requestPermission();
-      toast(result === 'granted' ? 'Notifiche abilitate.' : 'Notifiche non autorizzate.');
-    });
-    document.querySelectorAll('[data-storage]').forEach((button) => button.addEventListener('click', () => toast(button.dataset.storage === 'device' ? 'Download locale già attivo.' : 'Integrazione cloud in preparazione.')));
+    player.addEventListener('playing', () => { setVideoLoading(false); $('stage').classList.add('playing'); $('cameraStatusDot').classList.add('live'); $('liveTag').className = 'live-badge live'; $('liveTag').textContent = 'LIVE'; });
+    player.addEventListener('error', () => { setVideoLoading(false); offline('Errore di riproduzione.', 'Controlla il codec e il gateway HLS.'); });
+    $('viewFocus').addEventListener('click', () => setView('focus')); $('viewGrid').addEventListener('click', () => setView('grid'));
+    $('globalSearch').addEventListener('input', (event) => { searchText = event.target.value.trim().toLowerCase(); renderSwitcher(); renderGrid(); });
+    $('clearEvents').addEventListener('click', clearEvents);
+    $('accountButton').addEventListener('click', openAccount); $('mobileAccount').addEventListener('click', openAccount); $('logoutButton').addEventListener('click', () => { $('accountDialog').close(); logout(); });
+    $('savePreferences').addEventListener('click', () => { preferences.theme = $('themeSelect').value; preferences.cameraView = $('viewSelect').value; preferences.compact = $('compactInput').checked; persistPreferences(); });
+    $('themeButton').addEventListener('click', () => { preferences.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; persistPreferences(); });
+    $('changePassword').addEventListener('click', changePassword); $('deleteAccount').addEventListener('click', deleteAccount);
+    $('mobileCameras').addEventListener('click', () => window.scrollTo({ top:document.querySelector('.section-head').offsetTop - 75, behavior:'smooth' }));
+    document.addEventListener('keydown', (event) => { if (event.key === '/' && !event.target.matches('input,textarea,select')) { event.preventDefault(); $('globalSearch').focus(); } if (event.key === 'Escape') document.querySelectorAll('dialog[open]').forEach((dialog) => dialog.close()); });
     window.addEventListener('beforeinstallprompt', (event) => { event.preventDefault(); deferredInstallPrompt = event; $('installButton').hidden = false; });
     $('installButton').addEventListener('click', async () => { if (!deferredInstallPrompt) return; deferredInstallPrompt.prompt(); await deferredInstallPrompt.userChoice; deferredInstallPrompt = null; $('installButton').hidden = true; });
+    window.addEventListener('online', () => setConnection('', 'Vault sincronizzato')); window.addEventListener('offline', () => setConnection('error', 'Browser offline'));
   }
 
   async function bootstrap() {
-    createAuthUi();
-    prepareSettingsDialog();
-    bindControls();
-    renderEvents();
+    bindEvents(); setAuthMode('login'); $('loginUsername').value = localStorage.getItem(LAST_USER_KEY) || '';
     if (auth?.token) {
-      try { await enterDashboard(); return; }
-      catch { logout(false); }
+      try { await enterDashboard(); return; } catch { logout(false); }
     }
-    $('authGate').hidden = false;
+    $('authGate').hidden = false; $('appShell').hidden = true;
   }
 
   bootstrap();

@@ -2,113 +2,172 @@
 <html lang="it">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#07111f">
+    <meta name="description" content="Dashboard privata multiutente per telecamere HLS, RTSP e ONVIF.">
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./app.css">
     <title>FREDI Control</title>
-    <style>
-      :root { --bg:#07111f; --panel:#101d2e; --panel-2:#14243a; --line:#273a53; --text:#edf4ff; --muted:#93a5bc; --blue:#3d91ff; --green:#37d39a; --warn:#ffb648; --danger:#ff6b77; }
-      * { box-sizing: border-box; }
-      body { margin:0; min-width:320px; min-height:100vh; background:linear-gradient(135deg,#07111f,#0d1b2e 55%,#10243c); color:var(--text); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-      button { font:inherit; color:inherit; cursor:pointer; }
-      .app { max-width:1540px; margin:auto; padding:24px; }
-      header { display:flex; align-items:center; justify-content:space-between; gap:20px; margin-bottom:24px; }
-      .brand { display:flex; gap:13px; align-items:center; } .logo { display:grid; place-items:center; width:42px; height:42px; border-radius:13px; background:linear-gradient(135deg,var(--blue),#7159ef); font-size:22px; box-shadow:0 12px 28px #2878c844; }
-      h1 { font-size:20px; margin:0; letter-spacing:-.3px; } .sub { color:var(--muted); font-size:13px; margin-top:3px; }
-      .top-actions { display:flex; gap:10px; align-items:center; } .status { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:13px; padding:9px 12px; border:1px solid var(--line); border-radius:10px; background:#091728aa; }
-      .dot { width:8px; height:8px; border-radius:50%; background:var(--warn); box-shadow:0 0 10px currentColor; } .dot.live { background:var(--green); }
-      .icon-btn,.primary { border:1px solid var(--line); background:var(--panel); border-radius:10px; padding:10px 13px; transition:.18s; } .icon-btn:hover,.primary:hover,.ptz button:hover { border-color:#4b76a5; transform:translateY(-1px); }
-      .primary { background:var(--blue); border-color:var(--blue); font-weight:700; }
-      .layout { display:grid; grid-template-columns:minmax(0,1fr) 330px; gap:20px; }
-      .card { background:linear-gradient(145deg,#122238e8,#0d192ae8); border:1px solid var(--line); border-radius:17px; box-shadow:0 20px 55px #00000024; }
-      .viewer { overflow:hidden; } .camera-bar { padding:16px 18px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--line); }
-      .camera-name { font-weight:700; } .camera-meta { color:var(--muted); font-size:12px; margin-top:3px; }.live-tag { color:var(--green); font-weight:700; font-size:12px; letter-spacing:.6px; }
-      .stage { aspect-ratio:16/9; position:relative; background:radial-gradient(circle at center,#172b45,#07111e 72%); display:grid; place-items:center; overflow:hidden; }
-      video { display:none; width:100%; height:100%; object-fit:contain; background:#000; } .stage.playing video { display:block; }.stage.playing .empty { display:none; }
-      .empty { text-align:center; max-width:400px; padding:30px; }.empty .camera-icon { font-size:48px; margin-bottom:12px; }.empty h2 { margin:0 0 8px; font-size:19px; }.empty p { margin:0; color:var(--muted); line-height:1.5; font-size:14px; }
-      .video-tools { position:absolute; left:16px; right:16px; bottom:15px; display:flex; justify-content:space-between; opacity:.08; transition:.2s; }.stage:hover .video-tools { opacity:1; }.video-tools div { display:flex; gap:8px; }.round { border:1px solid #ffffff36; background:#09111fd4; border-radius:9px; padding:9px 11px; }
-      .control-row { display:grid; grid-template-columns:1.2fr .8fr 1fr; gap:14px; padding:17px; border-top:1px solid var(--line); }.action { min-height:44px; display:flex; align-items:center; justify-content:center; gap:8px; border:1px solid var(--line); border-radius:10px; background:var(--panel); font-weight:650; }.action.record { color:#ff8e96; }.action.active { background:#6e2330; border-color:#f05c68; }.action:disabled { cursor:not-allowed; opacity:.6; }
-      .below { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-top:20px; }.section { padding:18px; }.section h3 { margin:0 0 16px; font-size:15px; }.recording-empty { border:1px dashed #3c5574; border-radius:11px; padding:24px; text-align:center; color:var(--muted); font-size:13px; }.recording-list { display:none; }.recording { display:flex; gap:10px; align-items:center; padding:10px 0; border-bottom:1px solid var(--line); font-size:13px; }.thumb { width:52px; height:34px; border-radius:6px; background:#1e3655; display:grid; place-items:center; }
-      aside { display:flex; flex-direction:column; gap:20px; }.side { padding:18px; }.side h3 { margin:0 0 15px; font-size:15px; }.info { display:flex; justify-content:space-between; align-items:center; padding:11px 0; border-bottom:1px solid var(--line); font-size:13px; }.info:last-child { border:none; }.info span:first-child { color:var(--muted); }.pending { color:var(--warn); }
-      .ptz { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; max-width:180px; margin:0 auto; }.ptz button { min-height:48px; border-radius:11px; border:1px solid var(--line); background:var(--panel-2); font-size:20px; }.ptz .center { color:var(--blue); font-size:15px; }.ptz .blank { visibility:hidden; }
-      .presets { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:16px; }.preset { padding:9px 5px; border:1px solid var(--line); border-radius:8px; background:transparent; color:var(--muted); font-size:12px; }.preset:hover { color:var(--text); }
-      .storage { display:grid; gap:10px; }.storage-item { display:flex; align-items:center; gap:11px; padding:12px; border:1px solid var(--line); border-radius:11px; background:#0b1727; }.storage-icon { width:32px; height:32px; display:grid; place-items:center; border-radius:9px; background:#1b304c; }.storage-title { font-size:13px; font-weight:700; }.storage-state { color:var(--muted); font-size:11px; margin-top:2px; }.storage-action { margin-left:auto; border:0; background:transparent; color:var(--blue); font-size:12px; }
-      .notice { border-left:3px solid var(--blue); padding:3px 0 3px 11px; color:var(--muted); font-size:12px; line-height:1.45; }.notice b { color:var(--text); }
-      .timeline { margin-top:20px; padding:18px; }.timeline-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:13px; }.timeline-head h3 { margin:0; font-size:15px; }.event { display:grid; grid-template-columns:10px 1fr auto; gap:10px; align-items:center; padding:12px 0; border-top:1px solid var(--line); font-size:13px; }.event-dot { width:8px; height:8px; border-radius:50%; background:var(--blue); }.event-dot.warn { background:var(--warn); }.event-time { color:var(--muted); font-size:11px; }.camera-switch { display:flex; gap:9px; overflow:auto; padding:0 0 14px; }.camera-chip { min-width:145px; padding:11px; background:#0a1727; border:1px solid var(--line); border-radius:10px; text-align:left; }.camera-chip.active { border-color:var(--blue); background:#132b4a; }.camera-chip b { display:block; font-size:12px; }.camera-chip span { color:var(--muted); font-size:11px; }.camera-chip.add { color:var(--blue); text-align:center; }
-      dialog { color:var(--text); width:min(500px,calc(100% - 32px)); background:#101e31; border:1px solid #3a5575; border-radius:16px; padding:0; box-shadow:0 25px 80px #000a; } dialog::backdrop { background:#020713a6; }.modal { padding:20px; }.modal header { margin:0 0 18px; }.modal h2 { margin:0; font-size:18px; }.field { display:grid; gap:7px; margin:13px 0; }.field label { color:var(--muted); font-size:12px; }.field input { width:100%; border:1px solid var(--line); border-radius:9px; background:#091525; color:var(--text); padding:11px; outline:none; }.field input:focus { border-color:var(--blue); }.modal-foot { display:flex; justify-content:flex-end; gap:10px; margin-top:20px; }.secondary { border:1px solid var(--line); border-radius:9px; background:transparent; padding:10px 13px; }
-      #toast { position:fixed; bottom:24px; left:50%; transform:translate(-50%,120px); transition:.25s; background:#172941; border:1px solid #416186; color:#eef6ff; padding:12px 16px; border-radius:10px; font-size:13px; box-shadow:0 16px 35px #0008; z-index:10; }.show { transform:translate(-50%,0)!important; }
-      @media (max-width:1050px) { .layout { grid-template-columns:1fr; } aside { display:grid; grid-template-columns:1fr 1fr; } .storage-card { grid-column:span 2; } } @media (max-width:670px) { .app { padding:13px; } header { align-items:flex-start; } .top-actions .status { display:none; } .layout,.below,aside { display:block; }.below .card,aside .card { margin-top:14px; }.control-row { grid-template-columns:1fr; }.camera-bar { padding:13px; }.stage { aspect-ratio:4/3; }.top-actions .primary { display:none; } }
-    </style>
   </head>
   <body>
-    <main class="app">
-      <header>
-        <div class="brand"><div class="logo">◉</div><div><h1>FREDI Control</h1><div class="sub">Sicurezza domestica · dashboard privata</div></div></div>
-        <div class="top-actions"><div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Sorgente non configurata</span></div><button class="icon-btn" id="installButton" hidden>⇩ Installa</button><button class="icon-btn" id="settingsButton">⚙ Impostazioni</button><button class="primary" id="snapshotTop">▣ Snapshot</button></div>
+    <svg class="svg-sprite" aria-hidden="true">
+      <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h7A2.5 2.5 0 0 1 16 7.5V9l4-2v10l-4-2v1.5a2.5 2.5 0 0 1-2.5 2h-7a2.5 2.5 0 0 1-2.5-2z"/></symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.6 2.8 8.1 7 10 4.2-1.9 7-5.4 7-10V6z"/><path d="m9 12 2 2 4-5"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></symbol>
+      <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+      <symbol id="i-focus" viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/><circle cx="12" cy="12" r="3"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 15.3A8 8 0 0 1 8.7 4 8.5 8.5 0 1 0 20 15.3Z"/></symbol>
+      <symbol id="i-snapshot" viewBox="0 0 24 24"><path d="M4 7h4l1.5-2h5L16 7h4v12H4z"/><circle cx="12" cy="13" r="4"/></symbol>
+      <symbol id="i-record" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/></symbol>
+      <symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></symbol>
+      <symbol id="i-volume" viewBox="0 0 24 24"><path d="M5 10v4h4l5 4V6L9 10zM17 9a4 4 0 0 1 0 6"/></symbol>
+      <symbol id="i-edit" viewBox="0 0 24 24"><path d="m4 16-1 5 5-1L19 9l-4-4zM13.5 6.5l4 4"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+      <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 5H5v14h5M14 8l4 4-4 4M18 12H9"/></symbol>
+    </svg>
+
+    <section class="auth-gate" id="authGate">
+      <div class="auth-layout">
+        <aside class="auth-story">
+          <a class="brand brand-large" href="#" aria-label="FREDI Control">
+            <span class="brand-mark"><svg><use href="#i-camera"/></svg></span>
+            <span><strong>FREDI Control</strong><small>Private camera workspace</small></span>
+          </a>
+          <div class="auth-copy">
+            <span class="eyebrow"><svg><use href="#i-shield"/></svg> Privacy by design</span>
+            <h1>Le tue telecamere.<br><span>Un solo posto sicuro.</span></h1>
+            <p>Organizza HLS, controlli PTZ e credenziali in un vault separato per ogni account.</p>
+          </div>
+          <div class="auth-benefits">
+            <div><span>01</span><p><b>Multiutente</b>Ogni profilo vede solo le proprie camere.</p></div>
+            <div><span>02</span><p><b>Vault cifrato</b>Password e token non finiscono su Render.</p></div>
+            <div><span>03</span><p><b>Da ogni dispositivo</b>Accedi una volta e ritrova tutto.</p></div>
+          </div>
+        </aside>
+        <main class="auth-panel">
+          <form class="auth-card" id="loginForm">
+            <div class="mobile-auth-brand"><span class="brand-mark"><svg><use href="#i-camera"/></svg></span><b>FREDI Control</b></div>
+            <span class="eyebrow" id="authEyebrow">Bentornato</span>
+            <h2 id="authTitle">Accedi al tuo spazio</h2>
+            <p id="authSubtitle">Inserisci username o email e la tua password.</p>
+            <div class="form-field"><label for="loginUsername">Username o email</label><input id="loginUsername" autocomplete="username" required maxlength="254" placeholder="nomeutente"></div>
+            <div class="form-field" id="registerEmailField" hidden><label for="registerEmail">Email</label><input id="registerEmail" type="email" autocomplete="email" maxlength="254" placeholder="nome@esempio.it"></div>
+            <div class="form-field"><label for="loginPassword">Password</label><div class="password-field"><input id="loginPassword" type="password" autocomplete="current-password" required maxlength="256" placeholder="••••••••••••"><button type="button" class="reveal" data-reveal="loginPassword" aria-label="Mostra password">Mostra</button></div><div class="password-meter" id="passwordMeter" hidden><i></i><span>Usa almeno 12 caratteri</span></div></div>
+            <div class="form-field" id="registerConfirmField" hidden><label for="registerConfirm">Conferma password</label><input id="registerConfirm" type="password" autocomplete="new-password" maxlength="256" placeholder="Ripeti la password"></div>
+            <label class="check-row" id="termsRow" hidden><input id="termsInput" type="checkbox"><span>Accetto che le configurazioni siano archiviate cifrate sul gateway.</span></label>
+            <div class="form-error" id="loginError" role="alert"></div>
+            <button class="button primary wide" id="loginButton" type="submit">Accedi</button>
+            <button class="button ghost wide" id="authModeButton" type="button">Non hai un account? Registrati</button>
+            <p class="auth-footnote"><svg><use href="#i-lock"/></svg> Connessione HTTPS · sessione protetta · nessuna pubblicità</p>
+          </form>
+        </main>
+      </div>
+    </section>
+
+    <div class="app-shell" id="appShell" hidden>
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="FREDI Control">
+          <span class="brand-mark"><svg><use href="#i-camera"/></svg></span>
+          <span><strong>FREDI Control</strong><small>Camera workspace</small></span>
+        </a>
+        <div class="global-search"><svg><use href="#i-search"/></svg><input id="globalSearch" type="search" placeholder="Cerca una camera…" aria-label="Cerca una camera"><kbd>/</kbd></div>
+        <div class="top-actions">
+          <div class="connection-pill" id="connectionPill"><i id="statusDot"></i><span id="statusText">Vault sincronizzato</span></div>
+          <button class="icon-button" id="installButton" hidden title="Installa app" aria-label="Installa app">↓</button>
+          <button class="icon-button" id="themeButton" title="Cambia tema" aria-label="Cambia tema"><svg><use href="#i-moon"/></svg></button>
+          <button class="account-button" id="accountButton" type="button"><span id="accountInitial">U</span><b id="accountName">Account</b><small>Gestisci</small></button>
+        </div>
       </header>
 
-      <div class="layout">
-        <section>
-          <div class="card viewer">
-            <div class="camera-switch"><button class="camera-chip active"><b>● IPC365</b><span>ONVIF · 1080p</span></button><button class="camera-chip"><b>○ Box auto</b><span>FREDI G1 · In attesa RTSP</span></button><button class="camera-chip add" id="addCamera">＋ Aggiungi camera</button></div>
-            <div class="camera-bar"><div><div class="camera-name" id="cameraName">IPC365 · 1080p</div><div class="camera-meta">Gateway protetto · RTSP locale → HLS HTTPS</div></div><div class="live-tag" id="liveTag">OFFLINE</div></div>
-            <div class="stage" id="stage"><video id="player" autoplay muted playsinline></video><div class="empty"><div class="camera-icon">◉</div><h2>Live non disponibile</h2><p>Configura un URL HLS o WebRTC quando il gateway RTSP sarà pronto. La dashboard è già pronta per collegarsi.</p></div><div class="video-tools"><div><button class="round" id="muteButton">🔇</button><button class="round" id="fullButton">⛶</button></div><div><button class="round" id="qualityButton">AUTO</button></div></div></div>
-            <div class="control-row"><button class="action record" id="recordButton">⏺ Registra clip</button><button class="action" id="snapshotButton">▣ Snapshot</button><button class="action" id="speakerButton">🔊 Audio camera</button></div>
-          </div>
-          <div class="below">
-            <section class="card section"><h3>Registrazioni</h3><div class="recording-empty" id="recordingEmpty">Le clip registrate appariranno qui. Potrai salvarle sul gateway locale, Dropbox o MEGA.</div><div class="recording-list" id="recordingList"></div></section>
-            <section class="card section"><h3>Stato sistema</h3><div class="info"><span>Gateway RTSP / HLS</span><b class="pending" id="gatewayState">Da configurare</b></div><div class="info"><span>Rilevamento movimento</span><b class="pending">In attesa API camera</b></div><div class="info"><span>Ultimo snapshot</span><b id="snapshotState">—</b></div></section>
-          </div>
-          <section class="card timeline"><div class="timeline-head"><h3>Timeline sicurezza</h3><button class="secondary" id="clearEvents">Pulisci</button></div><div id="events"><div class="event"><i class="event-dot warn"></i><div><b>Gateway non configurato</b><div class="sub">Collega HLS e API locale per attivare eventi, motion e backup.</div></div><time class="event-time">Ora</time></div><div class="event"><i class="event-dot"></i><div><b>Dashboard pronta</b><div class="sub">PWA installabile e configurazione salvata nel browser.</div></div><time class="event-time">Ora</time></div></div></section>
+      <main class="workspace">
+        <section class="welcome-row">
+          <div><span class="eyebrow">Panoramica</span><h1 id="welcomeTitle">La tua sicurezza, sotto controllo.</h1><p>Gestisci live, accessi e controlli da un’unica dashboard.</p></div>
+          <button class="button primary" id="addCamera"><svg><use href="#i-plus"/></svg>Aggiungi camera</button>
         </section>
 
-        <aside>
-          <section class="card side"><h3>Controlli PTZ</h3><div class="ptz"><button class="blank">·</button><button data-ptz="up">↑</button><button class="blank">·</button><button data-ptz="left">←</button><button class="center" data-ptz="stop" title="Ferma movimento">■</button><button data-ptz="right">→</button><button class="blank">·</button><button data-ptz="down">↓</button><button class="blank">·</button></div><div class="presets"><button class="preset" data-preset="1" disabled>Preset non supportati</button></div></section>
-          <section class="card side storage-card"><h3>Destinazioni salvataggio</h3><div class="storage"><div class="storage-item"><div class="storage-icon">▣</div><div><div class="storage-title">Gateway locale</div><div class="storage-state">Pronto quando RTSP sarà attivo</div></div><button class="storage-action" data-storage="locale">Configura</button></div><div class="storage-item"><div class="storage-icon">◆</div><div><div class="storage-title">Dropbox</div><div class="storage-state">Backup OAuth da collegare</div></div><button class="storage-action" data-storage="dropbox">Collega</button></div><div class="storage-item"><div class="storage-icon">M</div><div><div class="storage-title">MEGA</div><div class="storage-state">Backup gateway da collegare</div></div><button class="storage-action" data-storage="mega">Collega</button></div><div class="storage-item"><div class="storage-icon">↓</div><div><div class="storage-title">Questo dispositivo</div><div class="storage-state">Download manuale di clip e snapshot</div></div><button class="storage-action" data-storage="device">Attivo</button></div></div></section>
-          <section class="card side"><h3>Automazioni</h3><div class="info"><span>Notifiche browser</span><button class="storage-action" id="notificationButton">Attiva</button></div><div class="info"><span>Eventi motion</span><b class="pending">Gateway richiesto</b></div><div class="info"><span>Conservazione clip</span><b>30 giorni</b></div></section>
-          <section class="card side"><div class="notice"><b>Privacy prima.</b><br>Non inserire password RTSP, Dropbox o MEGA nel browser. I collegamenti cloud richiederanno un backend sicuro sul gateway.</div></section>
-        </aside>
-      </div>
-    </main>
-    <dialog id="settingsDialog"><form method="dialog" class="modal"><header><h2>Impostazioni dashboard</h2><button class="secondary" value="cancel">×</button></header><div class="field"><label for="nameInput">Nome camera</label><input id="nameInput" maxlength="40"></div><div class="field"><label for="streamInput">URL HLS pubblico</label><input id="streamInput" type="url" placeholder="https://camera.example/ipc365/index.m3u8"></div><div class="field"><label for="streamUsernameInput">Utente autenticazione HLS/Nginx</label><input id="streamUsernameInput" autocomplete="username" placeholder="Lascia vuoto se non richiesto"></div><div class="field"><label for="streamPasswordInput">Password autenticazione HLS/Nginx</label><input id="streamPasswordInput" type="password" autocomplete="current-password" placeholder="Conservata solo per questa sessione"></div><div class="field"><label for="apiInput">URL API gateway PTZ</label><input id="apiInput" type="url" placeholder="https://control.example"></div><div class="field"><label for="apiTokenInput">Token API PTZ</label><input id="apiTokenInput" type="password" autocomplete="off" placeholder="Conservato solo per questa sessione"></div><div class="notice">Le password e il token restano nella sessione di questo browser e non vengono pubblicati su GitHub o Render.</div><div class="modal-foot"><button class="secondary" value="cancel">Annulla</button><button class="primary" id="saveSettings" value="default">Salva e collega</button></div></form></dialog>
-    <div id="toast" role="status"></div>
-    <script src="./config.js"></script><script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
-    <script type="text/plain" id="legacy-script">
-      const defaults = window.APP_CONFIG || {};
-      const saved = JSON.parse(localStorage.getItem('camera-control-v2') || '{}');
-      const config = { cameraName: saved.cameraName || defaults.cameraName || 'IPC365 · 1080p', streamUrl: saved.streamUrl || defaults.streamUrl || '', streamUsername: saved.streamUsername || '', streamPassword: sessionStorage.getItem('camera-stream-password') || '', apiBaseUrl: saved.apiBaseUrl || defaults.apiBaseUrl || '', apiToken: sessionStorage.getItem('camera-api-token') || '' };
-      const eventLog = JSON.parse(localStorage.getItem('fredi-events') || '[]');
-      const $ = (id) => document.getElementById(id); const player = $('player'); let hls; let mediaRecorder; let chunks = []; let toastTimer;
-      function toast(message) { $('toast').textContent = message; $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 3600); }
-      function renderEvents() { if (!eventLog.length) { $('events').innerHTML='<div class="recording-empty">Nessun evento recente.</div>'; return; } $('events').innerHTML=eventLog.map((item)=>`<div class="event"><i class="event-dot ${item.type}"></i><div><b>${item.title}</b><div class="sub">${item.detail}</div></div><time class="event-time">${item.time}</time></div>`).join(''); }
-      function event(title, detail, type='') { eventLog.unshift({title,detail,type,time:new Date().toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}); eventLog.splice(25); localStorage.setItem('fredi-events',JSON.stringify(eventLog)); renderEvents(); }
-      function updateName() { $('cameraName').textContent = config.cameraName; }
-      function sourceReady() { return Boolean(config.streamUrl); }
-      function connectStream() {
-        if (!sourceReady()) return;
-        $('gatewayState').textContent = 'Connessione…';
-        if (window.Hls && Hls.isSupported()) { const authorization=config.streamUsername&&config.streamPassword?`Basic ${btoa(`${config.streamUsername}:${config.streamPassword}`)}`:''; hls?.destroy(); hls = new Hls({ lowLatencyMode:true, liveSyncDurationCount:2, xhrSetup:(xhr)=>{ if(authorization) xhr.setRequestHeader('Authorization',authorization); } }); hls.loadSource(config.streamUrl); hls.attachMedia(player); hls.on(Hls.Events.MANIFEST_PARSED, () => player.play().catch(() => toast('Tocca Play per avviare il live.'))); hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) offline('Gateway HLS non raggiungibile o autenticazione errata.'); }); }
-        else if (player.canPlayType('application/vnd.apple.mpegurl')) { player.src = config.streamUrl; player.play().catch(() => {}); }
-        else offline('Questo browser non supporta HLS.');
-      }
-      function offline(message) { $('gatewayState').textContent = 'Non raggiungibile'; $('gatewayState').className = 'pending'; $('statusText').textContent = message || 'Gateway non raggiungibile'; $('statusDot').classList.remove('live'); $('liveTag').textContent = 'OFFLINE'; }
-      player.addEventListener('playing', () => { $('stage').classList.add('playing'); $('statusText').textContent = 'Live connesso'; $('statusDot').classList.add('live'); $('liveTag').textContent = 'LIVE'; $('gatewayState').textContent = 'Online'; $('gatewayState').className = ''; event('Live connesso','Il gateway HLS sta trasmettendo video.'); });
-      player.addEventListener('error', () => offline('Errore nel live.'));
-      async function actionFromGateway(path, body) { if (!config.apiBaseUrl) throw new Error('Configura prima l’URL API del gateway.'); if (!config.apiToken) throw new Error('Inserisci il token API PTZ nelle impostazioni.'); const response = await fetch(config.apiBaseUrl.replace(/\/$/, '') + path, { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${config.apiToken}`}, body:JSON.stringify(body || {}) }); const result=await response.json().catch(() => ({})); if (!response.ok) throw new Error(result.detail||result.error||'Il gateway ha rifiutato la richiesta.'); return result; }
-      document.querySelectorAll('[data-ptz]').forEach((button) => button.addEventListener('click', async () => { try { await actionFromGateway('/api/ptz', { action:button.dataset.ptz }); toast('Comando PTZ inviato.'); } catch (e) { toast(e.message); } }));
-      document.querySelectorAll('[data-preset]').forEach((button) => button.addEventListener('click', async () => { try { await actionFromGateway('/api/ptz/preset', { preset:Number(button.dataset.preset) }); toast('Preset richiamato.'); } catch (e) { toast(e.message); } }));
-      function snapshot() { if (!sourceReady() || !player.videoWidth) return toast('Snapshot disponibile quando il live sarà attivo.'); const canvas=document.createElement('canvas'); canvas.width=player.videoWidth; canvas.height=player.videoHeight; canvas.getContext('2d').drawImage(player,0,0); canvas.toBlob((blob)=>{ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`ipc365-${Date.now()}.jpg`; a.click(); URL.revokeObjectURL(a.href); $('snapshotState').textContent=new Date().toLocaleTimeString('it-IT'); toast('Snapshot scaricato su questo dispositivo.'); },'image/jpeg',.92); }
-      function addRecording(blob) { const url=URL.createObjectURL(blob); const row=document.createElement('div'); row.className='recording'; row.innerHTML=`<div class="thumb">▶</div><div><b>Clip manuale</b><div class="sub">${new Date().toLocaleString('it-IT')}</div></div><a class="storage-action" href="${url}" download="ipc365-clip-${Date.now()}.webm">Scarica</a>`; $('recordingEmpty').style.display='none'; $('recordingList').style.display='block'; $('recordingList').prepend(row); }
-      function record() { if (!player.captureStream || !sourceReady() || player.paused) return toast('Avvia prima il live per registrare una clip.'); const button=$('recordButton'); if (mediaRecorder?.state === 'recording') { mediaRecorder.stop(); button.classList.remove('active'); button.textContent='⏺ Registra clip'; return; } try { chunks=[]; mediaRecorder=new MediaRecorder(player.captureStream(), { mimeType:'video/webm' }); mediaRecorder.ondataavailable=(e)=>e.data.size && chunks.push(e.data); mediaRecorder.onstop=()=>{ addRecording(new Blob(chunks,{type:'video/webm'})); toast('Clip pronta per il download.'); }; mediaRecorder.start(); button.classList.add('active'); button.textContent='■ Ferma registrazione'; toast('Registrazione locale avviata.'); } catch { toast('Questo browser non supporta la registrazione del live.'); } }
-      $('settingsButton').onclick=()=>{ $('nameInput').value=config.cameraName; $('streamInput').value=config.streamUrl; $('streamUsernameInput').value=config.streamUsername; $('streamPasswordInput').value=config.streamPassword; $('apiInput').value=config.apiBaseUrl; $('apiTokenInput').value=config.apiToken; $('settingsDialog').showModal(); }; $('saveSettings').onclick=()=>{ config.cameraName=$('nameInput').value.trim()||'IPC365'; config.streamUrl=$('streamInput').value.trim(); config.streamUsername=$('streamUsernameInput').value.trim(); config.streamPassword=$('streamPasswordInput').value; config.apiBaseUrl=$('apiInput').value.trim(); config.apiToken=$('apiTokenInput').value.trim(); localStorage.setItem('camera-control-v2',JSON.stringify({cameraName:config.cameraName,streamUrl:config.streamUrl,streamUsername:config.streamUsername,apiBaseUrl:config.apiBaseUrl})); sessionStorage.setItem('camera-stream-password',config.streamPassword); sessionStorage.setItem('camera-api-token',config.apiToken); updateName(); if(config.streamUrl) connectStream(); else offline('Sorgente non configurata'); toast('Impostazioni salvate in questo browser.'); };
-      let deferredInstallPrompt; window.addEventListener('beforeinstallprompt',(e)=>{ e.preventDefault(); deferredInstallPrompt=e; $('installButton').hidden=false; }); $('installButton').onclick=async()=>{ if(!deferredInstallPrompt) return; deferredInstallPrompt.prompt(); await deferredInstallPrompt.userChoice; deferredInstallPrompt=null; $('installButton').hidden=true; };
-      $('snapshotButton').onclick=snapshot; $('snapshotTop').onclick=snapshot; $('recordButton').onclick=record; $('muteButton').onclick=()=>{ player.muted=!player.muted; $('muteButton').textContent=player.muted?'🔇':'🔊'; }; $('fullButton').onclick=()=>$('stage').requestFullscreen?.(); $('speakerButton').onclick=()=>toast('Audio bidirezionale richiederà l’API del gateway.'); $('qualityButton').onclick=()=>toast('Qualità automatica: controllata dal gateway HLS.'); $('addCamera').onclick=()=>toast('Multi-camera pronto: aggiungi il prossimo gateway nelle impostazioni backend.'); $('clearEvents').onclick=()=>{ eventLog.length=0; localStorage.setItem('fredi-events','[]'); renderEvents(); }; $('notificationButton').onclick=async()=>{ if(!('Notification' in window)) return toast('Questo browser non supporta notifiche.'); const result=await Notification.requestPermission(); toast(result==='granted'?'Notifiche abilitate.':'Notifiche non autorizzate.'); }; document.querySelectorAll('[data-storage]').forEach((button)=>button.onclick=()=>toast(button.dataset.storage==='device'?'Download locale già disponibile per clip e snapshot.':'Collegamento disponibile quando il backend gateway sarà attivo.'));
-      document.addEventListener('keydown',(e)=>{ if(e.target.matches('input')||$('settingsDialog').open) return; if(e.key==='f') $('fullButton').click(); if(e.key==='m') $('muteButton').click(); if(e.key==='s') snapshot(); }); window.addEventListener('offline',()=>{ offline('Browser offline.'); event('Connessione persa','Il browser è offline.','warn'); });
-      renderEvents(); updateName(); if (sourceReady()) connectStream();
-      if ('serviceWorker' in navigator) navigator.serviceWorker.register('./service-worker.js').catch(() => {});
-    </script>
+        <section class="stats-grid" aria-label="Riepilogo telecamere">
+          <article class="stat-card"><div class="stat-icon blue"><svg><use href="#i-camera"/></svg></div><div><span>Telecamere</span><strong id="statCameras">0</strong><small>nel tuo vault</small></div></article>
+          <article class="stat-card"><div class="stat-icon green"><svg><use href="#i-check"/></svg></div><div><span>Configurate</span><strong id="statConfigured">0</strong><small>con sorgente HLS</small></div></article>
+          <article class="stat-card"><div class="stat-icon violet"><svg><use href="#i-focus"/></svg></div><div><span>Controllo PTZ</span><strong id="statPtz">0</strong><small>gateway collegati</small></div></article>
+          <article class="stat-card"><div class="stat-icon amber"><svg><use href="#i-shield"/></svg></div><div><span>Vault</span><strong id="statVault">Protetto</strong><small>AES-256-GCM</small></div></article>
+        </section>
+
+        <section class="section-head">
+          <div><h2>Le tue telecamere</h2><p id="cameraCountLabel">Nessuna camera configurata</p></div>
+          <div class="section-tools">
+            <div class="segmented" aria-label="Modalità visualizzazione"><button id="viewFocus" class="active" title="Vista focus"><svg><use href="#i-focus"/></svg><span>Focus</span></button><button id="viewGrid" title="Vista griglia"><svg><use href="#i-grid"/></svg><span>Griglia</span></button></div>
+            <button class="button secondary" id="refreshButton">↻ Aggiorna</button>
+          </div>
+        </section>
+
+        <section id="emptyWorkspace" class="empty-workspace" hidden>
+          <div class="empty-illustration"><span></span><svg><use href="#i-camera"/></svg></div>
+          <span class="eyebrow">Inizia da qui</span><h2>Aggiungi la tua prima telecamera</h2><p>Inserisci il flusso HLS e, se disponibile, il gateway PTZ. Le credenziali saranno cifrate nel tuo vault.</p>
+          <button class="button primary" id="emptyAddCamera"><svg><use href="#i-plus"/></svg>Configura una camera</button>
+        </section>
+
+        <section id="focusView" class="focus-layout">
+          <div class="focus-main">
+            <nav class="camera-switch" id="cameraSwitcher" aria-label="Seleziona telecamera"></nav>
+            <article class="viewer-card">
+              <header class="viewer-head"><div><div class="viewer-title"><i id="cameraStatusDot"></i><h2 id="cameraName">Camera</h2></div><p id="cameraMeta">Da configurare</p></div><div class="viewer-actions"><span class="live-badge" id="liveTag">OFFLINE</span><button class="icon-button" id="editCurrent" title="Modifica camera"><svg><use href="#i-edit"/></svg></button></div></header>
+              <div class="stage" id="stage">
+                <video id="player" autoplay muted playsinline></video>
+                <div class="video-empty" id="videoEmpty"><div class="empty-camera"><svg><use href="#i-camera"/></svg></div><h3 id="emptyTitle">Live non disponibile</h3><p id="emptyText">Configura una sorgente HLS per iniziare.</p><button class="button secondary" id="configureCurrent">Configura camera</button></div>
+                <div class="video-loading" id="videoLoading" hidden><span></span><p>Connessione al live…</p></div>
+                <div class="video-toolbar"><div><button id="muteButton" title="Audio"><svg><use href="#i-volume"/></svg></button><button id="fullButton" title="Schermo intero"><svg><use href="#i-expand"/></svg></button></div><div><button id="snapshotButton" title="Snapshot"><svg><use href="#i-snapshot"/></svg></button><button id="recordButton" title="Registra"><svg><use href="#i-record"/></svg><span>Registra</span></button></div></div>
+              </div>
+            </article>
+          </div>
+
+          <aside class="control-column">
+            <article class="panel ptz-panel"><header><div><span class="eyebrow">Movimento</span><h3>Controlli PTZ</h3></div><span class="panel-state" id="ptzState">Non configurato</span></header><div class="ptz-pad"><button class="up" data-ptz="up" aria-label="Su">↑</button><button class="left" data-ptz="left" aria-label="Sinistra">←</button><button class="stop" data-ptz="stop" aria-label="Ferma">■</button><button class="right" data-ptz="right" aria-label="Destra">→</button><button class="down" data-ptz="down" aria-label="Giù">↓</button></div><p>Premi una direzione per un movimento breve e preciso.</p></article>
+            <article class="panel details-panel"><header><div><span class="eyebrow">Dettagli</span><h3>Configurazione</h3></div><button class="text-button" id="testCurrent">Verifica</button></header><dl><div><dt>Video</dt><dd id="detailVideo">Non configurato</dd></div><div><dt>Controllo</dt><dd id="detailPtz">Non configurato</dd></div><div><dt>Credenziali</dt><dd id="detailCredentials">Nessuna</dd></div><div><dt>Ultimo snapshot</dt><dd id="snapshotState">—</dd></div></dl></article>
+          </aside>
+        </section>
+
+        <section id="gridView" class="camera-grid" hidden></section>
+
+        <section class="lower-grid">
+          <article class="panel activity-panel"><header><div><span class="eyebrow">Attività</span><h3>Timeline account</h3></div><button class="text-button danger-text" id="clearEvents">Pulisci</button></header><div class="event-list" id="events"></div></article>
+          <article class="panel recording-panel"><header><div><span class="eyebrow">Questo dispositivo</span><h3>Clip recenti</h3></div><span class="panel-state">Locale</span></header><div class="recording-empty" id="recordingEmpty"><svg><use href="#i-record"/></svg><p>Le registrazioni manuali appariranno qui e resteranno sul dispositivo.</p></div><div class="recording-list" id="recordingList"></div></article>
+        </section>
+      </main>
+
+      <nav class="mobile-nav" aria-label="Navigazione mobile"><button id="mobileCameras" class="active"><svg><use href="#i-camera"/></svg><span>Camere</span></button><button id="mobileAdd"><svg><use href="#i-plus"/></svg><span>Aggiungi</span></button><button id="mobileAccount"><svg><use href="#i-settings"/></svg><span>Account</span></button></nav>
+    </div>
+
+    <dialog id="settingsDialog" class="modal-dialog">
+      <form id="cameraForm" class="modal-card">
+        <header class="modal-head"><div><span class="eyebrow">Camera workspace</span><h2 id="settingsTitle">Aggiungi camera</h2><p>Configura video e controlli. Puoi cambiare tutto in seguito.</p></div><button type="button" class="modal-close" data-close="settingsDialog" aria-label="Chiudi">×</button></header>
+        <div class="step-tabs"><button type="button" class="active" data-step="general"><span>1</span>Generale</button><button type="button" data-step="video"><span>2</span>Video</button><button type="button" data-step="control"><span>3</span>Controllo</button></div>
+        <div class="form-step active" data-panel="general"><div class="form-grid"><div class="form-field"><label for="nameInput">Nome camera</label><input id="nameInput" required maxlength="80" placeholder="Ingresso principale"></div><div class="form-field"><label for="modelInput">Modello o posizione</label><input id="modelInput" maxlength="80" placeholder="IPC365 · Esterno"></div></div><div class="tip-card"><svg><use href="#i-camera"/></svg><div><b>Un nome chiaro aiuta</b><p>Usa stanza, ingresso o posizione per riconoscerla rapidamente.</p></div></div></div>
+        <div class="form-step" data-panel="video"><div class="form-field"><label for="streamInput">URL HLS pubblico</label><input id="streamInput" type="url" maxlength="2048" placeholder="https://camera.example/live/index.m3u8"><small>Il browser deve poter raggiungere questo indirizzo in HTTPS.</small></div><div class="form-grid"><div class="form-field"><label for="streamUsernameInput">Utente HLS</label><input id="streamUsernameInput" autocomplete="off" maxlength="256" placeholder="Opzionale"></div><div class="form-field"><label for="streamPasswordInput">Password HLS</label><div class="password-field"><input id="streamPasswordInput" type="password" autocomplete="off" maxlength="512" placeholder="Salvata cifrata"><button type="button" class="reveal" data-reveal="streamPasswordInput">Mostra</button></div></div></div><button type="button" class="button secondary" id="testStreamSettings">Verifica URL video</button></div>
+        <div class="form-step" data-panel="control"><label class="switch-row"><span><b>Controlli PTZ</b><small>Abilita frecce direzionali e stop</small></span><input id="ptzInput" type="checkbox"><i></i></label><div id="ptzFields"><div class="form-field"><label for="apiInput">URL API gateway PTZ</label><input id="apiInput" type="url" maxlength="2048" placeholder="https://control.example"><small>Endpoint HTTPS del gateway associato alla camera.</small></div><div class="form-field"><label for="apiTokenInput">Token API PTZ</label><div class="password-field"><input id="apiTokenInput" type="password" autocomplete="off" maxlength="1024" placeholder="Salvato cifrato"><button type="button" class="reveal" data-reveal="apiTokenInput">Mostra</button></div></div></div><div class="security-note"><svg><use href="#i-lock"/></svg><p><b>Protetto nel vault</b>Credenziali HLS e token PTZ vengono cifrati prima di essere salvati sul gateway.</p></div></div>
+        <footer class="modal-foot"><button type="button" class="button danger" id="deleteCamera"><svg><use href="#i-trash"/></svg>Elimina</button><div><button type="button" class="button ghost" data-close="settingsDialog">Annulla</button><button type="button" class="button primary" id="saveSettings">Salva camera</button></div></footer>
+      </form>
+    </dialog>
+
+    <dialog id="accountDialog" class="modal-dialog compact-dialog">
+      <form class="modal-card">
+        <header class="modal-head"><div><span class="eyebrow">Il tuo profilo</span><h2>Account e preferenze</h2><p>Gestisci sicurezza e aspetto della dashboard.</p></div><button type="button" class="modal-close" data-close="accountDialog">×</button></header>
+        <section class="profile-card"><span id="profileInitial">U</span><div><b id="profileUsername">Utente</b><small id="profileEmail">email@example.it</small></div><button type="button" class="button ghost small" id="logoutButton"><svg><use href="#i-logout"/></svg>Esci</button></section>
+        <section class="modal-section"><h3>Preferenze</h3><div class="form-grid"><div class="form-field"><label for="themeSelect">Tema</label><select id="themeSelect"><option value="dark">Scuro</option><option value="light">Chiaro</option><option value="system">Sistema</option></select></div><div class="form-field"><label for="viewSelect">Vista iniziale</label><select id="viewSelect"><option value="focus">Focus</option><option value="grid">Griglia</option></select></div></div><label class="check-row"><input id="compactInput" type="checkbox"><span>Interfaccia compatta</span></label><button type="button" class="button secondary" id="savePreferences">Salva preferenze</button></section>
+        <section class="modal-section"><h3>Cambia password</h3><div class="form-field"><label for="currentPassword">Password attuale</label><input id="currentPassword" type="password" autocomplete="current-password"></div><div class="form-grid"><div class="form-field"><label for="newPassword">Nuova password</label><input id="newPassword" type="password" autocomplete="new-password"></div><div class="form-field"><label for="confirmNewPassword">Conferma</label><input id="confirmNewPassword" type="password" autocomplete="new-password"></div></div><button type="button" class="button secondary" id="changePassword">Aggiorna password</button></section>
+        <details class="danger-zone"><summary>Zona pericolosa</summary><p>L’eliminazione rimuove account e vault in modo definitivo.</p><div class="form-field"><label for="deleteAccountPassword">Password per confermare</label><input id="deleteAccountPassword" type="password" autocomplete="current-password"></div><button type="button" class="button danger" id="deleteAccount"><svg><use href="#i-trash"/></svg>Elimina account</button></details>
+      </form>
+    </dialog>
+
+    <div class="loading-overlay" id="loadingOverlay" hidden><span></span><p>Sincronizzazione vault…</p></div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="./config.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
     <script src="./app.js"></script>
   </body>
 </html>

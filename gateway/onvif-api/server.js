@@ -231,7 +231,7 @@ function saveAccounts(data) {
 }
 
 function decryptVault(account) {
-  if (!account.vault) return { version: 1, cameras: [] };
+  if (!account.vault) return { version: 1, cameras: [], events: [], preferences: {} };
   const envelope = account.vault;
   const decipher = crypto.createDecipheriv('aes-256-gcm', vaultKey(), Buffer.from(envelope.iv, 'base64'));
   decipher.setAAD(Buffer.from(`fredi-camera-vault-v2:${account.id}`));
@@ -241,7 +241,12 @@ function decryptVault(account) {
     decipher.final(),
   ]);
   const vault = JSON.parse(plaintext.toString('utf8'));
-  return { version: 1, cameras: Array.isArray(vault.cameras) ? vault.cameras : [] };
+  return {
+    version: 1,
+    cameras: Array.isArray(vault.cameras) ? vault.cameras : [],
+    events: Array.isArray(vault.events) ? vault.events.slice(0, 100) : [],
+    preferences: vault.preferences && typeof vault.preferences === 'object' ? vault.preferences : {},
+  };
 }
 
 function encryptVault(accountId, vault) {
@@ -266,7 +271,36 @@ function publicAccount(account) {
 
 function accountFromSession(session, data) {
   if (!session) return null;
-  return data.users.find((account) => account.id === session.sub) || null;
+  const account = data.users.find((candidate) => candidate.id === session.sub) || null;
+  if (!account || session.ver !== (account.sessionVersion || '1')) return null;
+  return account;
+}
+
+function vaultEvent(type, title, detail) {
+  return {
+    id:crypto.randomUUID(),
+    type:cleanText(type, 24, 'info'),
+    title:cleanText(title, 100, 'Evento'),
+    detail:cleanText(detail, 240),
+    createdAt:new Date().toISOString(),
+  };
+}
+
+function addAccountEvent(account, type, title, detail) {
+  const vault = decryptVault(account);
+  vault.events.unshift(vaultEvent(type, title, detail));
+  vault.events = vault.events.slice(0, 100);
+  account.vault = encryptVault(account.id, vault);
+  return vault;
+}
+
+function cleanPreferences(value) {
+  const input = value && typeof value === 'object' ? value : {};
+  return {
+    theme:['dark', 'light', 'system'].includes(input.theme) ? input.theme : 'dark',
+    cameraView:['focus', 'grid'].includes(input.cameraView) ? input.cameraView : 'focus',
+    compact:Boolean(input.compact),
+  };
 }
 
 function cleanText(value, maximum, fallback = '') {
@@ -328,7 +362,7 @@ function corsHeaders(origin) {
   const allowed = origin === ALLOWED_ORIGIN ? origin : ALLOWED_ORIGIN;
   return {
     'Access-Control-Allow-Origin': allowed,
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Authorization, Content-Type',
     'Vary': 'Origin',
     'Cache-Control': 'no-store',
@@ -395,14 +429,21 @@ const server = http.createServer(async (request, response) => {
         passwordSalt:salt,
         passwordHash:passwordHash(password, salt),
         passwordIterations:DASHBOARD_PASSWORD_ITERATIONS,
+        sessionVersion:crypto.randomBytes(16).toString('hex'),
         createdAt:new Date().toISOString(),
         vault:null,
       };
+      account.vault = encryptVault(account.id, {
+        version:1,
+        cameras:[],
+        events:[vaultEvent('success', 'Account creato', 'Il vault personale è pronto.')],
+        preferences:cleanPreferences({}),
+      });
       data.users.push(account);
       saveAccounts(data);
       noteLoginFailure(rateKey);
       const expiresAt = Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000;
-      const token = signSession({ sub:account.id, username:account.username, exp:expiresAt, nonce:crypto.randomBytes(12).toString('hex') });
+      const token = signSession({ sub:account.id, username:account.username, ver:account.sessionVersion, exp:expiresAt, nonce:crypto.randomBytes(12).toString('hex') });
       return send(response, 201, { ok:true, account:publicAccount(account), expiresAt, token }, headers);
     } catch (error) {
       noteLoginFailure(rateKey);
@@ -427,8 +468,10 @@ const server = http.createServer(async (request, response) => {
         return send(response, 401, { error: 'Invalid username or password' }, headers);
       }
       clearLoginFailures(rateKey);
+      addAccountEvent(account, 'success', 'Nuovo accesso', 'Accesso completato alla dashboard.');
+      saveAccounts(data);
       const expiresAt = Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000;
-      const token = signSession({ sub:account.id, username:account.username, exp:expiresAt, nonce:crypto.randomBytes(12).toString('hex') });
+      const token = signSession({ sub:account.id, username:account.username, ver:account.sessionVersion || '1', exp:expiresAt, nonce:crypto.randomBytes(12).toString('hex') });
       return send(response, 200, { ok:true, account:publicAccount(account), expiresAt, token }, headers);
     } catch (error) {
       return send(response, 400, { error: error.message }, headers);
@@ -454,7 +497,10 @@ const server = http.createServer(async (request, response) => {
       }
       if (request.method === 'PUT') {
         const body = await readJson(request);
-        const vault = { version: 1, cameras: cleanCameras(body.cameras) };
+        const vault = decryptVault(account);
+        vault.cameras = cleanCameras(body.cameras);
+        vault.events.unshift(vaultEvent('camera', 'Camere aggiornate', `${vault.cameras.length} configurazioni nel vault.`));
+        vault.events = vault.events.slice(0, 100);
         account.vault = encryptVault(account.id, vault);
         saveAccounts(data);
         return send(response, 200, vault, headers);
@@ -463,6 +509,88 @@ const server = http.createServer(async (request, response) => {
     } catch (error) {
       console.error(`Camera vault: ${error.message}`);
       return send(response, 400, { error: 'Camera configuration rejected', detail: error.message }, headers);
+    }
+  }
+
+  if (pathname === '/api/preferences') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    try {
+      const data = loadAccounts();
+      const account = accountFromSession(session, data);
+      if (!account) return send(response, 401, { error:'Unauthorized' }, headers);
+      const vault = decryptVault(account);
+      if (request.method === 'GET') return send(response, 200, { preferences:cleanPreferences(vault.preferences) }, headers);
+      if (request.method === 'PUT') {
+        const body = await readJson(request);
+        vault.preferences = cleanPreferences(body.preferences);
+        account.vault = encryptVault(account.id, vault);
+        saveAccounts(data);
+        return send(response, 200, { preferences:vault.preferences }, headers);
+      }
+      return send(response, 405, { error:'Method not allowed' }, headers);
+    } catch (error) {
+      return send(response, 400, { error:'Preferences rejected', detail:error.message }, headers);
+    }
+  }
+
+  if (pathname === '/api/events') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    try {
+      const data = loadAccounts();
+      const account = accountFromSession(session, data);
+      if (!account) return send(response, 401, { error:'Unauthorized' }, headers);
+      const vault = decryptVault(account);
+      if (request.method === 'GET') return send(response, 200, { events:vault.events }, headers);
+      if (request.method === 'DELETE') {
+        vault.events = [];
+        account.vault = encryptVault(account.id, vault);
+        saveAccounts(data);
+        return send(response, 200, { ok:true, events:[] }, headers);
+      }
+      return send(response, 405, { error:'Method not allowed' }, headers);
+    } catch (error) {
+      return send(response, 400, { error:'Events request rejected', detail:error.message }, headers);
+    }
+  }
+
+  if (pathname === '/api/account/password' && request.method === 'PUT') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    try {
+      const body = await readJson(request);
+      const data = loadAccounts();
+      const account = accountFromSession(session, data);
+      if (!account || !passwordMatches(body.currentPassword, account)) return send(response, 401, { error:'Current password is incorrect' }, headers);
+      const newPassword = typeof body.newPassword === 'string' ? body.newPassword : '';
+      if (newPassword.length < 12 || newPassword.length > 256) throw new Error('New password must be between 12 and 256 characters');
+      const salt = crypto.randomBytes(16).toString('hex');
+      account.passwordSalt = salt;
+      account.passwordHash = passwordHash(newPassword, salt);
+      account.passwordIterations = DASHBOARD_PASSWORD_ITERATIONS;
+      account.sessionVersion = crypto.randomBytes(16).toString('hex');
+      addAccountEvent(account, 'security', 'Password modificata', 'Le altre sessioni sono state revocate.');
+      saveAccounts(data);
+      const expiresAt = Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000;
+      const token = signSession({ sub:account.id, username:account.username, ver:account.sessionVersion, exp:expiresAt, nonce:crypto.randomBytes(12).toString('hex') });
+      return send(response, 200, { ok:true, account:publicAccount(account), expiresAt, token }, headers);
+    } catch (error) {
+      return send(response, 400, { error:error.message }, headers);
+    }
+  }
+
+  if (pathname === '/api/account' && request.method === 'DELETE') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    try {
+      const body = await readJson(request);
+      const data = loadAccounts();
+      const index = data.users.findIndex((account) => account.id === session.sub);
+      const account = index >= 0 ? data.users[index] : null;
+      if (!account || session.ver !== (account.sessionVersion || '1')) return send(response, 401, { error:'Unauthorized' }, headers);
+      if (!passwordMatches(body.password, account)) return send(response, 401, { error:'Password is incorrect' }, headers);
+      data.users.splice(index, 1);
+      saveAccounts(data);
+      return send(response, 200, { ok:true }, headers);
+    } catch (error) {
+      return send(response, 400, { error:error.message }, headers);
     }
   }
 
