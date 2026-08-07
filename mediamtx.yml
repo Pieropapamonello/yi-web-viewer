@@ -10,6 +10,10 @@ paths:
     # The FFmpeg bridge publishes the normalized IPC365 stream here.
     source: publisher
 
+  ipc365-low:
+    # 480p profile generated locally for constrained mobile connections.
+    source: publisher
+
   yi:
     # Reserved for the FREDI camera when its RTSP support is enabled.
     source: publisher

@@ -8,10 +8,12 @@ Una web app multiutente senza pubblicita' per vedere e configurare telecamere HL
 - vista focus e griglia, ricerca, riordino drag-and-drop e duplicazione camere;
 - posizione, note, preferiti, filtro e ordinamento sincronizzati per account;
 - configurazione guidata di video HLS e gateway PTZ;
-- verifica collegamenti, live a bassa latenza, audio, qualità HLS, fullscreen e orientamento;
+- verifica collegamenti, live a bassa latenza, audio, qualità reale 1080p/480p, fullscreen e orientamento;
 - snapshot e clip persistenti nel browser tramite IndexedDB, con download ed eliminazione;
 - controlli PTZ IPC365 verificati tramite confronto automatico dei fotogrammi;
-- PTZ con tre intensità, frecce da tastiera, feedback aptico e stop rapido;
+- PTZ con swipe sul video, tre intensità, frecce da tastiera, feedback aptico e stop rapido;
+- data e orologio con secondi sovrapposti al live;
+- rilevamento locale delle variazioni d'immagine e cronologia giornaliera con indicatori colorati;
 - tema chiaro/scuro/sistema, modalità compatta e preferenze sincronizzate;
 - timeline account cifrata e persistente;
 - stato operativo con latenza, ultimo controllo e quota dell'archivio locale;
@@ -42,6 +44,8 @@ Render puo' ospitare la pagina web e, opzionalmente, EasyProxy. Non puo' collega
 4. Apri `http://localhost:8080`.
 
 Il browser legge HLS da `http://localhost:8890/ipc365/index.m3u8`. La porta 8890 evita il conflitto con EasyProxy, che nello stack esistente usa gia' la porta host 8888.
+
+Il servizio `ipc365-bridge-low` genera anche `http://localhost:8890/ipc365-low/index.m3u8` a 854x480. Il selettore qualità passa realmente tra questa sorgente e quella originale; non è un semplice controllo cosmetico.
 
 La IPC365 testata espone H.264 1920x1080 sul percorso:
 
@@ -93,6 +97,8 @@ Le password HLS e il token PTZ sono salvati nel vault cifrato dell'utente e veng
 I frame PTZ proprietari sono basati sul progetto open source [MiguelDLM/360eyes_controller](https://github.com/MiguelDLM/360eyes_controller) e sono stati corretti tramite una cattura PCAP della camera 81XXF/S5-T: i valori firmati pan/tilt iniziano agli offset 40/44 e gli identificatori peer sono specifici della sessione IPC365. Configura `IPC365_SOURCE_ID` e `IPC365_DEVICE_ID` soltanto nel file `onvif.env` locale; non inserirli nella pagina web. I preset non sono disponibili perché il protocollo locale acquisito espone soltanto movimento direzionale e stop.
 
 Il gateway espone anche `GET /api/capabilities`: l'interfaccia abilita solo le funzioni realmente supportate. Luce, modalità guardia, conversazione bidirezionale e playback TF/cloud restano disattivati finché una cattura separata non ne documenta i comandi, evitando falsi controlli che mostrano successo senza agire sulla camera.
+
+Il rilevamento movimento della pagina confronta piccoli fotogrammi una volta al secondo e registra un evento solo oltre una soglia significativa, con cooldown di 20 secondi. È sospeso durante i movimenti PTZ per evitare falsi positivi. Funziona soltanto finché il viewer è aperto: uno storico continuo richiede un detector/registratore permanente nel gateway Docker.
 
 ### Account multiutente
 

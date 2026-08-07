@@ -49,6 +49,53 @@ services:
     networks:
       - proxy-net
 
+  # Secondary low-bandwidth profile used by the web quality selector.
+  ipc365-bridge-low:
+    image: lscr.io/linuxserver/ffmpeg:latest
+    container_name: ipc365-bridge-low
+    restart: unless-stopped
+    depends_on:
+      - ipc365-bridge
+    command:
+      - -hide_banner
+      - -loglevel
+      - warning
+      - -rtsp_transport
+      - tcp
+      - -i
+      - rtsp://camera-mediamtx:8554/ipc365
+      - -map
+      - 0:v:0
+      - -map
+      - 0:a:0?
+      - -vf
+      - scale=-2:480
+      - -c:v
+      - libx264
+      - -preset
+      - veryfast
+      - -tune
+      - zerolatency
+      - -b:v
+      - 700k
+      - -maxrate
+      - 850k
+      - -bufsize
+      - 1400k
+      - -g
+      - "25"
+      - -sc_threshold
+      - "0"
+      - -c:a
+      - copy
+      - -f
+      - rtsp
+      - -rtsp_transport
+      - tcp
+      - rtsp://camera-mediamtx:8554/ipc365-low
+    networks:
+      - proxy-net
+
   web:
     image: nginx:1.29-alpine
     restart: unless-stopped

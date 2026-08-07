@@ -348,12 +348,14 @@ function cleanCameras(value) {
       notes: cleanText(camera?.notes, 300),
       favorite:Boolean(camera?.favorite),
       streamUrl: cleanUrl(camera?.streamUrl),
+      streamLowUrl: cleanUrl(camera?.streamLowUrl),
       streamUsername: cleanText(camera?.streamUsername, 256),
       streamPassword: typeof camera?.streamPassword === 'string' ? camera.streamPassword.slice(0, 512) : '',
       apiBaseUrl: cleanUrl(camera?.apiBaseUrl),
       apiToken: typeof camera?.apiToken === 'string' ? camera.apiToken.slice(0, 1024) : '',
       ptz: camera?.ptz !== false,
       rotation: camera?.rotation === 180 ? 180 : 0,
+      motionDetection: camera?.motionDetection !== false,
     };
   });
 }
