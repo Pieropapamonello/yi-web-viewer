@@ -1,0 +1,8 @@
+services:
+  # Deploys only the viewer interface. It never contains your RTSP URL.
+  - type: web
+    name: yi-web-viewer
+    runtime: static
+    buildCommand: "true"
+    staticPublishPath: ./web
+    autoDeployTrigger: commit

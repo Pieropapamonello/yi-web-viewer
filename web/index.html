@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Yi RTSP Viewer</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; margin: 0; background: #000; color: #fff; font-family: system-ui, sans-serif; }
+      main { width: 100%; height: 100%; display: grid; place-items: center; }
+      video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+      #status { position: fixed; inset: auto 0 24px; text-align: center; font-size: 14px; color: #ddd; pointer-events: none; }
+      #status.error { color: #ff8a80; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <video id="player" autoplay muted playsinline controls></video>
+    </main>
+    <div id="status">Connessione alla telecamera…</div>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+    <script>
+      const player = document.getElementById('player');
+      const status = document.getElementById('status');
+      // For remote hosting set window.APP_CONFIG.streamUrl in web/config.js.
+      const streamUrl = window.APP_CONFIG?.streamUrl ||
+        `http://${location.hostname}:8888/yi/index.m3u8`;
+
+      function showError(message) {
+        status.textContent = message;
+        status.className = 'error';
+      }
+
+      if (window.Hls && Hls.isSupported()) {
+        const hls = new Hls({ lowLatencyMode: true, liveSyncDurationCount: 2 });
+        hls.loadSource(streamUrl);
+        hls.attachMedia(player);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          status.textContent = '';
+          player.play().catch(() => {});
+        });
+        hls.on(Hls.Events.ERROR, (_, data) => {
+          if (data.fatal) showError('Impossibile collegarsi alla telecamera. Controlla RTSP e rete.');
+        });
+      } else if (player.canPlayType('application/vnd.apple.mpegurl')) {
+        player.src = streamUrl;
+        player.addEventListener('loadeddata', () => { status.textContent = ''; });
+        player.addEventListener('error', () => showError('Impossibile collegarsi alla telecamera.'));
+      } else {
+        showError('Questo browser non supporta la riproduzione HLS.');
+      }
+    </script>
+  </body>
+</html>
