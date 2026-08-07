@@ -77,6 +77,7 @@
     authMode = mode;
     const register = mode === 'register';
     $('authEyebrow').textContent = register ? 'Registrazione pubblica' : 'Bentornato';
+    document.querySelector('label[for="loginUsername"]').textContent = register ? 'Username' : 'Username o email';
     $('authTitle').textContent = register ? 'Crea il tuo spazio' : 'Accedi al tuo spazio';
     $('authSubtitle').textContent = register ? 'Il tuo vault sarà separato da quello degli altri utenti.' : 'Inserisci username o email e la tua password.';
     $('registerEmailField').hidden = !register;

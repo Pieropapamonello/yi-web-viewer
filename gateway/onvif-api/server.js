@@ -446,8 +446,10 @@ const server = http.createServer(async (request, response) => {
       const token = signSession({ sub:account.id, username:account.username, ver:account.sessionVersion, exp:expiresAt, nonce:crypto.randomBytes(12).toString('hex') });
       return send(response, 201, { ok:true, account:publicAccount(account), expiresAt, token }, headers);
     } catch (error) {
-      noteLoginFailure(rateKey);
-      return send(response, 400, { error:error.message }, headers);
+      console.error(`Registration failed: ${error.message}`);
+      const validationError = /^(Username must|A valid email address|Password must)/.test(error.message);
+      if (validationError) noteLoginFailure(rateKey);
+      return send(response, validationError ? 400 : 500, { error:validationError ? error.message : 'Registration could not be completed' }, headers);
     }
   }
 
@@ -474,7 +476,8 @@ const server = http.createServer(async (request, response) => {
       const token = signSession({ sub:account.id, username:account.username, ver:account.sessionVersion || '1', exp:expiresAt, nonce:crypto.randomBytes(12).toString('hex') });
       return send(response, 200, { ok:true, account:publicAccount(account), expiresAt, token }, headers);
     } catch (error) {
-      return send(response, 400, { error: error.message }, headers);
+      console.error(`Login failed: ${error.message}`);
+      return send(response, 500, { error:'Login service temporarily unavailable' }, headers);
     }
   }
 
@@ -508,7 +511,8 @@ const server = http.createServer(async (request, response) => {
       return send(response, 405, { error: 'Method not allowed' }, headers);
     } catch (error) {
       console.error(`Camera vault: ${error.message}`);
-      return send(response, 400, { error: 'Camera configuration rejected', detail: error.message }, headers);
+      const validationError = /^(Invalid cameras list|Duplicate camera id|Only HTTP\/HTTPS)/.test(error.message);
+      return send(response, validationError ? 400 : 500, { error:validationError ? 'Camera configuration rejected' : 'Camera vault temporarily unavailable', ...(validationError ? { detail:error.message } : {}) }, headers);
     }
   }
 
@@ -529,7 +533,8 @@ const server = http.createServer(async (request, response) => {
       }
       return send(response, 405, { error:'Method not allowed' }, headers);
     } catch (error) {
-      return send(response, 400, { error:'Preferences rejected', detail:error.message }, headers);
+      console.error(`Preferences: ${error.message}`);
+      return send(response, 500, { error:'Preferences temporarily unavailable' }, headers);
     }
   }
 
@@ -549,7 +554,8 @@ const server = http.createServer(async (request, response) => {
       }
       return send(response, 405, { error:'Method not allowed' }, headers);
     } catch (error) {
-      return send(response, 400, { error:'Events request rejected', detail:error.message }, headers);
+      console.error(`Events: ${error.message}`);
+      return send(response, 500, { error:'Events temporarily unavailable' }, headers);
     }
   }
 
