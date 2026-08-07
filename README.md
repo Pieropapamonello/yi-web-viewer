@@ -46,6 +46,33 @@ MediaMTX e' collegato alla rete Docker esterna `proxy-net`, condivisa con Nginx 
 
 Non impostare l'URL HTTP locale nella pagina Render: i browser bloccano i contenuti HTTP caricati da una pagina HTTPS.
 
+### Controlli PTZ tramite ONVIF
+
+HLS trasporta soltanto il video. I pulsanti direzionali usano il gateway autenticato in `gateway/onvif-api`, che conserva le credenziali ONVIF esclusivamente sul PC di casa.
+
+Nel setup MediaFlow locale:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\mediaflow\camera\setup-onvif.ps1
+docker compose -p mediaflow -f C:\mediaflow\docker-compose.yml -f C:\mediaflow\docker-compose.camera.yml up -d --build onvif-gateway
+```
+
+La prima istruzione apre la finestra credenziali di Windows. Inserisci l'utente ONVIF (normalmente `admin`) e la password definita nell'app della camera. Lo script crea `C:\mediaflow\camera\onvif.env` e mostra un token API casuale da copiare nella dashboard. Il file e il token non devono essere pubblicati.
+
+In Nginx Proxy Manager crea poi un host HTTPS separato:
+
+```text
+control.nelloonrender.duckdns.org -> http://onvif-gateway:3000
+```
+
+Nella dashboard Render imposta:
+
+- URL API PTZ: `https://control.nelloonrender.duckdns.org`
+- Token API PTZ: il token prodotto dallo script
+- utente/password HLS: le credenziali della Access List Nginx, non quelle ONVIF
+
+Le password HLS e il token API sono conservati in `sessionStorage` e vengono richiesti nuovamente quando termina la sessione del browser.
+
 ### EasyProxy opzionale
 
 EasyProxy e' utile per proxy, CORS, header e playlist HLS. Non converte RTSP. Per avviarlo localmente:

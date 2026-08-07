@@ -1,0 +1,16 @@
+{
+  "name": "camera-onvif-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Authenticated ONVIF PTZ gateway for the IPC365 camera",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "onvif": "0.8.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
