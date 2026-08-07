@@ -15,7 +15,7 @@ const PASSWORD = process.env.ONVIF_PASSWORD || '';
 const API_TOKEN = process.env.API_TOKEN || '';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://yi-web-viewer.onrender.com';
 const MOVE_SPEED = Math.min(1, Math.max(0.05, Number(process.env.PTZ_SPEED || 0.45)));
-const MOVE_DURATION = Math.min(2000, Math.max(100, Number(process.env.PTZ_DURATION_MS || 800)));
+const MOVE_DURATION = Math.min(2000, Math.max(100, Number(process.env.PTZ_DURATION_MS || 1500)));
 const TIME_OFFSET_MS = Number(process.env.ONVIF_TIME_OFFSET_MS || 0);
 const IPC365_PTZ_PORT = Number(process.env.IPC365_PTZ_PORT || 23456);
 const DASHBOARD_PASSWORD_ITERATIONS = Number(process.env.DASHBOARD_PASSWORD_ITERATIONS || 310000);
@@ -610,7 +610,8 @@ const server = http.createServer(async (request, response) => {
     const body = await readJson(request);
     if (pathname === '/api/ptz' && request.method === 'POST') {
       await move(body.action);
-      return send(response, 200, { ok: true, action: body.action }, headers);
+      console.log(`PTZ ${body.action} completed in ${MOVE_DURATION}ms`);
+      return send(response, 200, { ok: true, action: body.action, durationMs: MOVE_DURATION }, headers);
     }
     if (pathname === '/api/ptz/preset' && request.method === 'POST') {
       await gotoPreset(Number(body.preset));

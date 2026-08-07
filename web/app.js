@@ -481,7 +481,11 @@
       const response = await fetch(`${camera.apiBaseUrl.replace(/\/$/, '')}/api/ptz`, { method:'POST', cache:'no-store', headers:{ 'Content-Type':'application/json', Authorization:`Bearer ${camera.apiToken}` }, body:JSON.stringify({ action }) });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.detail || result.error || 'Comando rifiutato.');
-      toast(`Movimento ${action} inviato.`);
+      toast(`Movimento ${action} eseguito. Sincronizzo il live…`, 'success');
+      [400, 1400, 2800].forEach((delay) => setTimeout(() => {
+        const liveEdge = Number(hls?.liveSyncPosition);
+        if (Number.isFinite(liveEdge) && Math.abs(player.currentTime - liveEdge) > 0.35) player.currentTime = liveEdge;
+      }, delay));
     } catch (error) { toast(error.message, 'error'); }
   }
 
