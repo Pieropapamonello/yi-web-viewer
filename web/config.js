@@ -3,5 +3,5 @@
 window.APP_CONFIG = {
   cameraName: 'IPC365 · 1080p',
   streamUrl: '',
-  apiBaseUrl: '',
+  apiBaseUrl: 'https://control.nelloonrender.duckdns.org',
 };
