@@ -109,19 +109,20 @@ function ipc365Id(value, name) {
   return Buffer.from(value, 'hex');
 }
 
-function ipc365Frame(action) {
+function ipc365Frame(action, requestedStep = IPC365_PTZ_STEP) {
   // The IPC365 frame declares 0x48 (72) bytes in its header. Sending only
   // 64 bytes is silently accepted by TCP but ignored by stricter 81XXF firmware.
   const frame = Buffer.alloc(72);
   IPC365_HEADER.copy(frame);
   ipc365Id(IPC365_SOURCE_ID, 'IPC365_SOURCE_ID').copy(frame, 20);
   ipc365Id(IPC365_DEVICE_ID, 'IPC365_DEVICE_ID').copy(frame, 24);
+  const step = Math.min(30, Math.max(3, Number(requestedStep) || IPC365_PTZ_STEP));
   const vectors = {
-    right: [IPC365_PTZ_STEP, 0],
-    left: [-IPC365_PTZ_STEP, 0],
+    right: [step, 0],
+    left: [-step, 0],
     // Captured IPC365/S5-T firmware uses an inverted vertical axis.
-    up: [0, -IPC365_PTZ_STEP],
-    down: [0, IPC365_PTZ_STEP],
+    up: [0, -step],
+    down: [0, step],
     stop: [0, 0],
   };
   const vector = vectors[action];
@@ -133,7 +134,7 @@ function ipc365Frame(action) {
   return frame;
 }
 
-function ipc365Move(action) {
+function ipc365Move(action, step) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host: HOST, port: IPC365_PTZ_PORT });
     let settled = false;
@@ -146,7 +147,7 @@ function ipc365Move(action) {
     socket.setTimeout(5000, () => fail(new Error('IPC365 PTZ connection timeout')));
     socket.once('error', fail);
     socket.once('connect', () => {
-      socket.write(ipc365Frame(action), (error) => {
+      socket.write(ipc365Frame(action, step), (error) => {
         if (error) return fail(error);
         const finish = () => {
           if (settled) return;
@@ -161,8 +162,8 @@ function ipc365Move(action) {
   });
 }
 
-async function move(action) {
-  await ipc365Move(action === 'home' ? 'stop' : action);
+async function move(action, step) {
+  await ipc365Move(action === 'home' ? 'stop' : action, step);
 }
 
 async function gotoPreset(index) {
@@ -315,6 +316,8 @@ function cleanPreferences(value) {
     theme:['dark', 'light', 'system'].includes(input.theme) ? input.theme : 'dark',
     cameraView:['focus', 'grid'].includes(input.cameraView) ? input.cameraView : 'focus',
     compact:Boolean(input.compact),
+    cameraSort:['custom', 'name', 'location'].includes(input.cameraSort) ? input.cameraSort : 'custom',
+    favoritesOnly:Boolean(input.favoritesOnly),
   };
 }
 
@@ -341,6 +344,9 @@ function cleanCameras(value) {
       id,
       name: cleanText(camera?.name, 80, 'Camera'),
       model: cleanText(camera?.model, 80),
+      location: cleanText(camera?.location, 80),
+      notes: cleanText(camera?.notes, 300),
+      favorite:Boolean(camera?.favorite),
       streamUrl: cleanUrl(camera?.streamUrl),
       streamUsername: cleanText(camera?.streamUsername, 256),
       streamPassword: typeof camera?.streamPassword === 'string' ? camera.streamPassword.slice(0, 512) : '',
@@ -562,6 +568,14 @@ const server = http.createServer(async (request, response) => {
       if (!account) return send(response, 401, { error:'Unauthorized' }, headers);
       const vault = decryptVault(account);
       if (request.method === 'GET') return send(response, 200, { events:vault.events }, headers);
+      if (request.method === 'POST') {
+        const body = await readJson(request);
+        vault.events.unshift(vaultEvent(body.type, body.title, body.detail));
+        vault.events = vault.events.slice(0, 100);
+        account.vault = encryptVault(account.id, vault);
+        saveAccounts(data);
+        return send(response, 201, { events:vault.events }, headers);
+      }
       if (request.method === 'DELETE') {
         vault.events = [];
         account.vault = encryptVault(account.id, vault);
@@ -623,9 +637,10 @@ const server = http.createServer(async (request, response) => {
   try {
     const body = await readJson(request);
     if (pathname === '/api/ptz' && request.method === 'POST') {
-      await move(body.action);
-      console.log(`PTZ ${body.action} completed in ${MOVE_DURATION}ms`);
-      return send(response, 200, { ok: true, action: body.action, durationMs: MOVE_DURATION }, headers);
+      const step = Math.min(30, Math.max(3, Number(body.step) || IPC365_PTZ_STEP));
+      await move(body.action, step);
+      console.log(`PTZ ${body.action} step ${step} completed in ${MOVE_DURATION}ms`);
+      return send(response, 200, { ok: true, action: body.action, step, durationMs: MOVE_DURATION }, headers);
     }
     if (pathname === '/api/capabilities' && request.method === 'GET') {
       return send(response, 200, {

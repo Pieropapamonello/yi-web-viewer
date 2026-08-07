@@ -1,4 +1,4 @@
-const CACHE = 'camera-control-v9';
+const CACHE = 'camera-control-v10';
 const APP_FILES = ['./', './index.html', './config.js', './app.css', './app.js', './manifest.webmanifest', './icon.svg'];
 self.addEventListener('install', (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(APP_FILES))));
 self.addEventListener('activate', (event) => event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))))));

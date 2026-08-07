@@ -12,7 +12,7 @@
   let account = null;
   let cameras = [];
   let events = [];
-  let preferences = { theme:'dark', cameraView:'focus', compact:false };
+  let preferences = { theme:'dark', cameraView:'focus', compact:false, cameraSort:'custom', favoritesOnly:false };
   let activeId = '';
   let editingId = '';
   let authMode = 'login';
@@ -24,6 +24,9 @@
   let deferredInstallPrompt = null;
   let draggedId = '';
   let recordingUrls = [];
+  let ptzStep = 12;
+  const healthByCamera = new Map();
+  let streamConnectStarted = 0;
 
   function safeJson(value, fallback) {
     try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
@@ -213,8 +216,11 @@
   }
 
   function filteredCameras() {
-    if (!searchText) return cameras;
-    return cameras.filter((camera) => `${camera.name} ${camera.model}`.toLowerCase().includes(searchText));
+    let result = cameras.filter((camera) => !preferences.favoritesOnly || camera.favorite);
+    if (searchText) result = result.filter((camera) => `${camera.name} ${camera.model} ${camera.location || ''} ${camera.notes || ''}`.toLowerCase().includes(searchText));
+    if (preferences.cameraSort === 'name') result = [...result].sort((a, b) => a.name.localeCompare(b.name, 'it', { sensitivity:'base' }));
+    if (preferences.cameraSort === 'location') result = [...result].sort((a, b) => (a.location || '').localeCompare(b.location || '', 'it', { sensitivity:'base' }) || a.name.localeCompare(b.name, 'it'));
+    return result;
   }
 
   function currentCamera() {
@@ -243,6 +249,22 @@
       if (navigator.share) await navigator.share(data);
       else { await navigator.clipboard.writeText(data.url); toast('Link app copiato. Nessuna credenziale condivisa.', 'success'); }
     } catch (error) { if (error.name !== 'AbortError') toast('Condivisione non disponibile.', 'error'); }
+  }
+
+  async function toggleFavorite() {
+    const camera = currentCamera(); if (!camera) return;
+    camera.favorite = !camera.favorite;
+    $('favoriteCurrent').classList.toggle('active', camera.favorite);
+    renderSwitcher(); renderGrid();
+    try { await persistCameras(); toast(camera.favorite ? 'Camera aggiunta ai preferiti.' : 'Camera rimossa dai preferiti.', 'success'); }
+    catch (error) { camera.favorite = !camera.favorite; renderAll(); toast(error.message, 'error'); }
+  }
+
+  async function recordActivity(type, title, detail) {
+    try {
+      const result = await gatewayFetch('/api/events', { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ type, title, detail }) });
+      events = result.events || events; renderEvents();
+    } catch { /* Operational actions must not fail because timeline sync failed. */ }
   }
 
   async function loadCapabilities(camera) {
@@ -284,21 +306,44 @@
     $('statCameras').textContent = cameras.length;
     $('statConfigured').textContent = configured;
     $('statPtz').textContent = ptz;
-    $('cameraCountLabel').textContent = cameras.length === 1 ? '1 camera nel vault' : `${cameras.length} camere nel vault`;
+    const visible = filteredCameras().length;
+    $('cameraCountLabel').textContent = visible === cameras.length ? (cameras.length === 1 ? '1 camera nel vault' : `${cameras.length} camere nel vault`) : `${visible} di ${cameras.length} camere visibili`;
+    $('activeCameraMetric').textContent = currentCamera()?.name || '—';
+    $('cameraSort').value = preferences.cameraSort || 'custom';
+    $('favoriteFilter').setAttribute('aria-pressed', String(Boolean(preferences.favoritesOnly)));
+    updateStorageEstimate();
+  }
+
+  function formatBytes(value) {
+    if (!Number.isFinite(value) || value <= 0) return '0 MB';
+    if (value < 1024 ** 3) return `${Math.max(1, Math.round(value / 1024 / 1024))} MB`;
+    return `${(value / 1024 ** 3).toFixed(1)} GB`;
+  }
+
+  async function updateStorageEstimate() {
+    if (!navigator.storage?.estimate) { $('storageMetric').textContent = 'Non disponibile'; return; }
+    try {
+      const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+      const percent = quota ? Math.min(100, usage / quota * 100) : 0;
+      $('storageMetric').textContent = `${formatBytes(usage)} / ${formatBytes(quota)}`;
+      $('recordingStorage').textContent = `${percent.toFixed(0)}% locale`;
+      $('storageProgress').style.width = `${percent}%`;
+    } catch { $('storageMetric').textContent = 'Non disponibile'; }
   }
 
   function renderSwitcher() {
     const container = $('cameraSwitcher');
     container.innerHTML = '';
-    for (const camera of filteredCameras()) {
+    const visible = filteredCameras();
+    for (const camera of visible) {
       const wrap = document.createElement('div');
-      wrap.className = 'camera-chip-wrap';
+      wrap.className = `camera-chip-wrap${camera.favorite ? ' favorite' : ''}`;
       wrap.draggable = true;
       wrap.dataset.id = camera.id;
       const button = document.createElement('button');
       button.type = 'button';
       button.className = `camera-chip${camera.id === activeId ? ' active' : ''}`;
-      button.innerHTML = `<b>${camera.streamUrl ? '●' : '○'} ${escapeHtml(camera.name)}</b><span>${escapeHtml(camera.model || 'Nessun modello')}</span>`;
+      button.innerHTML = `<b>${camera.streamUrl ? '●' : '○'} ${escapeHtml(camera.name)}</b><span>${escapeHtml(camera.location || camera.model || 'Posizione non indicata')}</span>`;
       button.addEventListener('click', () => selectCamera(camera.id));
       const edit = document.createElement('button');
       edit.type = 'button'; edit.className = 'camera-chip-edit'; edit.title = `Modifica ${camera.name}`; edit.innerHTML = icon('edit');
@@ -306,20 +351,23 @@
       bindDrag(wrap);
       wrap.append(button, edit); container.append(wrap);
     }
+    if (!visible.length) container.innerHTML = '<div class="filter-empty">Nessuna camera corrisponde ai filtri.</div>';
   }
 
   function renderGrid() {
     const container = $('gridView');
     container.innerHTML = '';
-    for (const camera of filteredCameras()) {
+    const visible = filteredCameras();
+    for (const camera of visible) {
       const card = document.createElement('article');
-      card.className = 'grid-card'; card.draggable = true; card.dataset.id = camera.id;
-      card.innerHTML = `<div class="grid-preview">${icon('camera')}</div><div class="grid-card-body"><div class="grid-card-head"><div><h3>${escapeHtml(camera.name)}</h3><p>${escapeHtml(camera.model || 'Modello non indicato')}</p></div><span class="live-badge">${camera.streamUrl ? 'PRONTA' : 'SETUP'}</span></div><div class="grid-tags"><span class="tag ${camera.streamUrl ? 'ok' : ''}">${camera.streamUrl ? 'HLS' : 'NO VIDEO'}</span><span class="tag ${camera.ptz && camera.apiToken ? 'ok' : ''}">${camera.ptz ? 'PTZ' : 'SOLO VIDEO'}</span><span class="tag">VAULT</span></div><div class="grid-actions"><button class="button secondary" data-open="${camera.id}">${icon('focus')} Apri</button><button class="button ghost" data-edit="${camera.id}">${icon('edit')} Modifica</button><button class="button ghost" data-copy="${camera.id}" title="Duplica">Copia</button></div></div>`;
+      card.className = `grid-card${camera.favorite ? ' favorite' : ''}`; card.draggable = preferences.cameraSort === 'custom'; card.dataset.id = camera.id;
+      card.innerHTML = `<div class="grid-preview">${icon('camera')}</div><div class="grid-card-body"><div class="grid-card-head"><div><h3>${camera.favorite ? '★ ' : ''}${escapeHtml(camera.name)}</h3><p>${escapeHtml(camera.model || 'Modello non indicato')}</p></div><span class="live-badge">${camera.streamUrl ? 'PRONTA' : 'SETUP'}</span></div><p class="grid-location">${icon('pin')}${escapeHtml(camera.location || 'Posizione non indicata')}</p><div class="grid-tags"><span class="tag ${camera.streamUrl ? 'ok' : ''}">${camera.streamUrl ? 'HLS' : 'NO VIDEO'}</span><span class="tag ${camera.ptz && camera.apiToken ? 'ok' : ''}">${camera.ptz ? 'PTZ' : 'SOLO VIDEO'}</span><span class="tag">VAULT</span></div><div class="grid-actions"><button class="button secondary" data-open="${camera.id}">${icon('focus')} Apri</button><button class="button ghost" data-edit="${camera.id}">${icon('edit')} Modifica</button><button class="button ghost" data-copy="${camera.id}" title="Duplica">Copia</button></div></div>`;
       card.querySelector('[data-open]').addEventListener('click', () => { setView('focus'); selectCamera(camera.id); });
       card.querySelector('[data-edit]').addEventListener('click', () => openCameraDialog(camera.id));
       card.querySelector('[data-copy]').addEventListener('click', () => duplicateCamera(camera.id));
       bindDrag(card); container.append(card);
     }
+    if (!visible.length) container.innerHTML = '<div class="filter-empty grid-filter-empty">Nessuna camera corrisponde ai filtri attivi.</div>';
   }
 
   function bindDrag(node) {
@@ -363,12 +411,24 @@
   function updateFocusedCamera(camera) {
     disconnectStream();
     $('cameraName').textContent = camera.name;
-    $('cameraMeta').textContent = camera.model || 'Modello non specificato';
+    $('cameraMeta').textContent = [camera.model, camera.location].filter(Boolean).join(' · ') || 'Modello e posizione non specificati';
     $('detailVideo').textContent = camera.streamUrl ? 'HLS configurato' : 'Non configurato';
+    $('detailLocation').textContent = camera.location || 'Non indicata';
+    $('detailNotes').textContent = camera.notes || 'Nessuna';
     $('detailPtz').textContent = camera.ptz && camera.apiBaseUrl && camera.apiToken ? 'Attivo' : 'Non configurato';
     $('detailCredentials').textContent = camera.streamUsername ? 'Basic Auth' : 'Nessuna';
     const ptzReady = camera.ptz && camera.apiBaseUrl && camera.apiToken;
     $('ptzState').textContent = ptzReady ? 'Pronto' : 'Non configurato';
+    $('favoriteCurrent').classList.toggle('active', Boolean(camera.favorite));
+    $('favoriteCurrent').title = camera.favorite ? 'Rimuovi dai preferiti' : 'Aggiungi ai preferiti';
+    const health = healthByCamera.get(camera.id);
+    $('healthBadge').className = `health-badge${health?.ok ? ' ok' : health ? ' error' : ''}`;
+    $('healthBadge').textContent = health?.ok ? `${health.latency} MS` : health ? 'ERRORE' : 'NON VERIFICATA';
+    $('detailHealth').textContent = health ? new Date(health.checkedAt).toLocaleTimeString('it-IT') : '—';
+    $('healthMetric').textContent = health ? new Date(health.checkedAt).toLocaleTimeString('it-IT') : '—';
+    $('activeCameraMetric').textContent = camera.name;
+    $('operationsTitle').textContent = health?.ok ? 'Sistema operativo' : health ? 'Controllo richiesto' : 'Sistema in osservazione';
+    $('operationsDetail').textContent = health?.ok ? `${camera.name} raggiungibile` : health ? `${camera.name} non raggiungibile` : `Avvio monitoraggio di ${camera.name}`;
     document.querySelectorAll('[data-ptz]').forEach((button) => { button.disabled = !ptzReady; });
     applyOrientation(camera);
     loadCapabilities(camera);
@@ -390,6 +450,7 @@
   }
 
   function connectStream(camera) {
+    streamConnectStarted = performance.now();
     setVideoLoading(true);
     $('emptyTitle').textContent = 'Connessione in corso';
     $('emptyText').textContent = 'Il gateway sta preparando il flusso live.';
@@ -398,7 +459,7 @@
       hls = new Hls({ lowLatencyMode:true, liveSyncDurationCount:2, backBufferLength:10, xhrSetup:(xhr) => { if (authorization) xhr.setRequestHeader('Authorization', authorization); } });
       hls.loadSource(camera.streamUrl); hls.attachMedia(player);
       hls.on(Hls.Events.MANIFEST_PARSED, () => { renderQualityLevels(); player.play().catch(() => { setVideoLoading(false); toast('Tocca il video per avviare il live.'); }); });
-      hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) { setVideoLoading(false); offline('Live non raggiungibile.', 'Controlla URL, CORS e credenziali HLS.'); } });
+      hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) { healthByCamera.set(camera.id, { ok:false, latency:0, checkedAt:Date.now() }); updateFocusedCameraStatus(camera); setVideoLoading(false); offline('Live non raggiungibile.', 'Controlla URL, CORS e credenziali HLS.'); } });
     } else if (player.canPlayType('application/vnd.apple.mpegurl') && !authorization) {
       player.src = camera.streamUrl; player.play().catch(() => setVideoLoading(false));
     } else {
@@ -430,9 +491,9 @@
 
   function openCameraDialog(id = '') {
     editingId = id;
-    const camera = cameras.find((item) => item.id === id) || { name:'', model:'', streamUrl:'', streamUsername:'', streamPassword:'', apiBaseUrl:'', apiToken:'', ptz:false };
+    const camera = cameras.find((item) => item.id === id) || { name:'', model:'', location:'', notes:'', favorite:false, streamUrl:'', streamUsername:'', streamPassword:'', apiBaseUrl:'', apiToken:'', ptz:false };
     $('settingsTitle').textContent = id ? `Modifica ${camera.name}` : 'Aggiungi camera';
-    $('nameInput').value = camera.name; $('modelInput').value = camera.model || '';
+    $('nameInput').value = camera.name; $('modelInput').value = camera.model || ''; $('locationInput').value = camera.location || ''; $('notesInput').value = camera.notes || ''; $('favoriteInput').checked = Boolean(camera.favorite);
     $('streamInput').value = camera.streamUrl || ''; $('streamUsernameInput').value = camera.streamUsername || ''; $('streamPasswordInput').value = camera.streamPassword || '';
     $('ptzInput').checked = Boolean(camera.ptz); $('apiInput').value = camera.apiBaseUrl || ''; $('apiTokenInput').value = camera.apiToken || '';
     $('deleteCamera').hidden = !id;
@@ -456,7 +517,7 @@
     if ($('ptzInput').checked && (!$('apiInput').value.trim() || !$('apiTokenInput').value)) { setCameraStep('control'); return toast('Per il PTZ servono URL gateway e token.', 'error'); }
     const previous = cameras.find((item) => item.id === editingId);
     const camera = {
-      id:editingId || crypto.randomUUID(), name, model:$('modelInput').value.trim(), streamUrl:$('streamInput').value.trim(),
+      id:editingId || crypto.randomUUID(), name, model:$('modelInput').value.trim(), location:$('locationInput').value.trim(), notes:$('notesInput').value.trim(), favorite:$('favoriteInput').checked, streamUrl:$('streamInput').value.trim(),
       streamUsername:$('streamUsernameInput').value.trim(), streamPassword:$('streamPasswordInput').value,
       apiBaseUrl:$('ptzInput').checked ? $('apiInput').value.trim() : '', apiToken:$('ptzInput').checked ? $('apiTokenInput').value : '', ptz:$('ptzInput').checked,
       rotation:previous?.rotation === 180 ? 180 : 0,
@@ -515,25 +576,45 @@
   async function testCurrentCamera() {
     const camera = currentCamera(); if (!camera) return;
     setLoading(true, 'Verifica collegamenti…');
+    const startedAt = performance.now();
     try {
       if (camera.streamUrl) await testStreamValues(camera.streamUrl, camera.streamUsername, camera.streamPassword);
       if (camera.ptz && camera.apiBaseUrl) {
         const response = await fetch(`${camera.apiBaseUrl.replace(/\/$/, '')}/health`, { cache:'no-store' });
         if (!response.ok) throw new Error(`Gateway PTZ non raggiungibile (${response.status}).`);
       }
-      toast('Configurazione raggiungibile.', 'success');
-    } catch (error) { toast(error.name === 'AbortError' ? 'Verifica scaduta: gateway troppo lento.' : error.message, 'error'); }
+      const latency = Math.max(1, Math.round(performance.now() - startedAt));
+      healthByCamera.set(camera.id, { ok:true, latency, checkedAt:Date.now() }); updateFocusedCameraStatus(camera);
+      recordActivity('success', 'Camera verificata', `${camera.name}: video e gateway raggiungibili in ${latency} ms.`);
+      toast(`Configurazione raggiungibile in ${latency} ms.`, 'success');
+    } catch (error) {
+      const message = error.name === 'AbortError' ? 'Verifica scaduta: gateway troppo lento.' : error.message;
+      healthByCamera.set(camera.id, { ok:false, latency:0, checkedAt:Date.now() }); updateFocusedCameraStatus(camera);
+      recordActivity('error', 'Verifica camera fallita', `${camera.name}: ${message}`); toast(message, 'error');
+    }
     finally { setLoading(false); }
+  }
+
+  function updateFocusedCameraStatus(camera) {
+    if (camera.id !== activeId) return;
+    const health = healthByCamera.get(camera.id);
+    $('healthBadge').className = `health-badge${health?.ok ? ' ok' : ' error'}`;
+    $('healthBadge').textContent = health?.ok ? `${health.latency} MS` : 'ERRORE';
+    $('detailHealth').textContent = new Date(health.checkedAt).toLocaleTimeString('it-IT');
+    $('healthMetric').textContent = $('detailHealth').textContent;
+    $('operationsTitle').textContent = health.ok ? 'Sistema operativo' : 'Controllo richiesto';
+    $('operationsDetail').textContent = health.ok ? `${camera.name} raggiungibile` : `${camera.name} non raggiungibile`;
   }
 
   async function sendPtz(action) {
     const camera = currentCamera();
     if (!camera?.ptz || !camera.apiBaseUrl || !camera.apiToken) return toast('PTZ non configurato per questa camera.', 'error');
     try {
-      const response = await fetch(`${camera.apiBaseUrl.replace(/\/$/, '')}/api/ptz`, { method:'POST', cache:'no-store', headers:{ 'Content-Type':'application/json', Authorization:`Bearer ${camera.apiToken}` }, body:JSON.stringify({ action }) });
+      const response = await fetch(`${camera.apiBaseUrl.replace(/\/$/, '')}/api/ptz`, { method:'POST', cache:'no-store', headers:{ 'Content-Type':'application/json', Authorization:`Bearer ${camera.apiToken}` }, body:JSON.stringify({ action, step:ptzStep }) });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.detail || result.error || 'Comando rifiutato.');
-      toast(`Movimento ${action} eseguito. Sincronizzo il live…`, 'success');
+      navigator.vibrate?.(25);
+      toast(`Movimento ${action} · intensità ${result.step || ptzStep}.`, 'success');
       [400, 1400, 2800].forEach((delay) => setTimeout(() => {
         const liveEdge = Number(hls?.liveSyncPosition);
         if (Number.isFinite(liveEdge) && Math.abs(player.currentTime - liveEdge) > 0.35) player.currentTime = liveEdge;
@@ -548,7 +629,7 @@
     canvas.getContext('2d').drawImage(player, 0, 0);
     canvas.toBlob((blob) => {
       const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${slug(camera.name)}-${Date.now()}.jpg`; link.click();
-      setTimeout(() => URL.revokeObjectURL(link.href), 1000); $('snapshotState').textContent = new Date().toLocaleTimeString('it-IT'); toast('Snapshot scaricato.', 'success');
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000); $('snapshotState').textContent = new Date().toLocaleTimeString('it-IT'); recordActivity('camera', 'Snapshot acquisito', `${camera.name}: immagine salvata sul dispositivo.`); toast('Snapshot scaricato.', 'success');
     }, 'image/jpeg', .92);
   }
 
@@ -584,7 +665,7 @@
   async function deleteRecording(id) {
     const db = await mediaDatabase();
     await new Promise((resolve, reject) => { const transaction = db.transaction('clips', 'readwrite'); transaction.objectStore('clips').delete(id); transaction.oncomplete = resolve; transaction.onerror = () => reject(transaction.error); });
-    db.close(); await loadRecordings(activeId); toast('Clip eliminata dal dispositivo.', 'success');
+    db.close(); await loadRecordings(activeId); await updateStorageEstimate(); toast('Clip eliminata dal dispositivo.', 'success');
   }
 
   async function loadRecordings(cameraId) {
@@ -607,7 +688,7 @@
 
   async function addRecording(blob) {
     const camera = currentCamera(); if (!camera) return;
-    try { await saveRecording(blob, camera); await loadRecordings(camera.id); toast('Clip salvata in modo persistente su questo dispositivo.', 'success'); }
+    try { await saveRecording(blob, camera); await loadRecordings(camera.id); await updateStorageEstimate(); recordActivity('camera', 'Registrazione salvata', `${camera.name}: clip locale da ${formatBytes(blob.size)}.`); toast('Clip salvata in modo persistente su questo dispositivo.', 'success'); }
     catch { toast('Impossibile salvare la clip: controlla lo spazio disponibile.', 'error'); }
   }
 
@@ -617,6 +698,7 @@
     document.documentElement.dataset.theme = theme;
     document.body.classList.toggle('compact', Boolean(preferences.compact));
     $('themeSelect').value = preferences.theme; $('viewSelect').value = preferences.cameraView; $('compactInput').checked = Boolean(preferences.compact);
+    $('cameraSort').value = preferences.cameraSort || 'custom'; $('favoriteFilter').setAttribute('aria-pressed', String(Boolean(preferences.favoritesOnly)));
     const meta = document.querySelector('meta[name="theme-color"]'); meta.content = theme === 'light' ? '#edf3f9' : '#07111f';
   }
 
@@ -680,26 +762,39 @@
     $('editCurrent').addEventListener('click', () => openCameraDialog(activeId)); $('configureCurrent').addEventListener('click', () => openCameraDialog(activeId));
     $('saveSettings').addEventListener('click', saveCamera); $('deleteCamera').addEventListener('click', deleteCamera);
     $('testStreamSettings').addEventListener('click', async () => { setLoading(true, 'Verifica HLS…'); try { await testStreamValues($('streamInput').value.trim(), $('streamUsernameInput').value.trim(), $('streamPasswordInput').value); toast('Playlist HLS raggiungibile.', 'success'); } catch (error) { toast(error.name === 'AbortError' ? 'Verifica scaduta.' : error.message, 'error'); } finally { setLoading(false); } });
-    $('testCurrent').addEventListener('click', testCurrentCamera); $('refreshButton').addEventListener('click', () => currentCamera() && updateFocusedCamera(currentCamera()));
+    $('testCurrent').addEventListener('click', testCurrentCamera); $('refreshButton').addEventListener('click', testCurrentCamera);
     document.querySelectorAll('[data-ptz]').forEach((button) => button.addEventListener('click', () => sendPtz(button.dataset.ptz)));
+    document.querySelectorAll('[data-ptz-step]').forEach((button) => button.addEventListener('click', () => { ptzStep = Number(button.dataset.ptzStep); document.querySelectorAll('[data-ptz-step]').forEach((item) => item.classList.toggle('active', item === button)); }));
     $('snapshotButton').addEventListener('click', snapshot); $('recordButton').addEventListener('click', toggleRecording);
     $('muteButton').addEventListener('click', () => { player.muted = !player.muted; $('muteButton').classList.toggle('unmuted', !player.muted); });
     $('fullButton').addEventListener('click', () => $('stage').requestFullscreen?.());
     $('rotateButton').addEventListener('click', toggleOrientation); $('orientationFeature').addEventListener('click', toggleOrientation);
     $('shareCamera').addEventListener('click', shareCurrentCamera);
+    $('favoriteCurrent').addEventListener('click', toggleFavorite);
+    $('favoriteFilter').addEventListener('click', () => { preferences.favoritesOnly = !preferences.favoritesOnly; renderStats(); renderSwitcher(); renderGrid(); persistPreferences(); });
+    $('cameraSort').addEventListener('change', () => { preferences.cameraSort = $('cameraSort').value; renderSwitcher(); renderGrid(); persistPreferences(); });
     $('qualitySelect').addEventListener('change', () => { if (hls) hls.currentLevel = Number($('qualitySelect').value); });
     $('recordingList').addEventListener('click', (event) => { const button = event.target.closest('[data-delete-recording]'); if (button) deleteRecording(button.dataset.deleteRecording); });
-    player.addEventListener('playing', () => { setVideoLoading(false); $('stage').classList.add('playing'); $('cameraStatusDot').classList.add('live'); $('liveTag').className = 'live-badge live'; $('liveTag').textContent = 'LIVE'; });
-    player.addEventListener('error', () => { setVideoLoading(false); offline('Errore di riproduzione.', 'Controlla il codec e il gateway HLS.'); });
+    player.addEventListener('playing', () => {
+      setVideoLoading(false); $('stage').classList.add('playing'); $('cameraStatusDot').classList.add('live'); $('liveTag').className = 'live-badge live'; $('liveTag').textContent = 'LIVE';
+      const camera = currentCamera(); if (camera && !healthByCamera.has(camera.id)) { healthByCamera.set(camera.id, { ok:true, latency:Math.max(1, Math.round(performance.now() - streamConnectStarted)), checkedAt:Date.now() }); updateFocusedCameraStatus(camera); }
+    });
+    player.addEventListener('error', () => { const camera = currentCamera(); if (camera) { healthByCamera.set(camera.id, { ok:false, latency:0, checkedAt:Date.now() }); updateFocusedCameraStatus(camera); } setVideoLoading(false); offline('Errore di riproduzione.', 'Controlla il codec e il gateway HLS.'); });
     $('viewFocus').addEventListener('click', () => setView('focus')); $('viewGrid').addEventListener('click', () => setView('grid'));
-    $('globalSearch').addEventListener('input', (event) => { searchText = event.target.value.trim().toLowerCase(); renderSwitcher(); renderGrid(); });
+    $('globalSearch').addEventListener('input', (event) => { searchText = event.target.value.trim().toLowerCase(); renderStats(); renderSwitcher(); renderGrid(); });
     $('clearEvents').addEventListener('click', clearEvents);
     $('accountButton').addEventListener('click', openAccount); $('mobileAccount').addEventListener('click', openAccount); $('logoutButton').addEventListener('click', () => { $('accountDialog').close(); logout(); });
     $('savePreferences').addEventListener('click', () => { preferences.theme = $('themeSelect').value; preferences.cameraView = $('viewSelect').value; preferences.compact = $('compactInput').checked; persistPreferences(); });
     $('themeButton').addEventListener('click', () => { preferences.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; persistPreferences(); });
     $('changePassword').addEventListener('click', changePassword); $('deleteAccount').addEventListener('click', deleteAccount);
     $('mobileCameras').addEventListener('click', () => window.scrollTo({ top:document.querySelector('.section-head').offsetTop - 75, behavior:'smooth' }));
-    document.addEventListener('keydown', (event) => { if (event.key === '/' && !event.target.matches('input,textarea,select')) { event.preventDefault(); $('globalSearch').focus(); } if (event.key === 'Escape') document.querySelectorAll('dialog[open]').forEach((dialog) => dialog.close()); });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === '/' && !event.target.matches('input,textarea,select')) { event.preventDefault(); $('globalSearch').focus(); return; }
+      if (event.key === 'Escape') { const dialogs = [...document.querySelectorAll('dialog[open]')]; dialogs.forEach((dialog) => dialog.close()); if (!dialogs.length) sendPtz('stop'); return; }
+      if (event.target.matches('input,textarea,select,button') || document.querySelector('dialog[open]')) return;
+      const actions = { ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right' };
+      if (actions[event.key]) { event.preventDefault(); sendPtz(actions[event.key]); }
+    });
     window.addEventListener('beforeinstallprompt', (event) => { event.preventDefault(); deferredInstallPrompt = event; $('installButton').hidden = false; });
     $('installButton').addEventListener('click', async () => { if (!deferredInstallPrompt) return; deferredInstallPrompt.prompt(); await deferredInstallPrompt.userChoice; deferredInstallPrompt = null; $('installButton').hidden = true; });
     window.addEventListener('online', () => setConnection('', 'Vault sincronizzato')); window.addEventListener('offline', () => setConnection('error', 'Browser offline'));

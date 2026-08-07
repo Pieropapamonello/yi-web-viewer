@@ -6,12 +6,15 @@ Una web app multiutente senza pubblicita' per vedere e configurare telecamere HL
 
 - registrazione pubblica e vault separato per account;
 - vista focus e griglia, ricerca, riordino drag-and-drop e duplicazione camere;
+- posizione, note, preferiti, filtro e ordinamento sincronizzati per account;
 - configurazione guidata di video HLS e gateway PTZ;
 - verifica collegamenti, live a bassa latenza, audio, qualità HLS, fullscreen e orientamento;
 - snapshot e clip persistenti nel browser tramite IndexedDB, con download ed eliminazione;
 - controlli PTZ IPC365 verificati tramite confronto automatico dei fotogrammi;
+- PTZ con tre intensità, frecce da tastiera, feedback aptico e stop rapido;
 - tema chiaro/scuro/sistema, modalità compatta e preferenze sincronizzate;
 - timeline account cifrata e persistente;
+- stato operativo con latenza, ultimo controllo e quota dell'archivio locale;
 - cambio password con revoca delle altre sessioni ed eliminazione account;
 - PWA responsive con navigazione mobile;
 - CSP, anti-iframe, no-sniff, Referrer-Policy e Permissions-Policy su Render.
@@ -99,7 +102,7 @@ Il gateway espone registrazione pubblica, login e vault separati:
 - `POST /api/auth/login` restituisce una sessione firmata con scadenza;
 - `GET/PUT /api/cameras` accede soltanto alle camere dell'utente autenticato;
 - `GET/PUT /api/preferences` sincronizza tema, vista e densita' dell'interfaccia;
-- `GET/DELETE /api/events` gestisce la timeline cifrata dell'account;
+- `GET/POST/DELETE /api/events` gestisce la timeline cifrata dell'account e registra verifiche, snapshot e clip;
 - `PUT /api/account/password` cambia password e revoca le sessioni precedenti;
 - `DELETE /api/account` elimina account e vault dopo conferma password;
 - password account hashate con PBKDF2-SHA256;
