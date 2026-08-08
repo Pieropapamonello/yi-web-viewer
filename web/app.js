@@ -18,6 +18,9 @@
   let authMode = 'login';
   let searchText = '';
   let hls = null;
+  let hlsReconnectTimer = 0;
+  let hlsRecoveryAttempts = 0;
+  let hlsRecovering = false;
   let peerConnection = null;
   let whepResourceUrl = '';
   let whepAuthorization = '';
@@ -703,6 +706,10 @@
 
   function disconnectStream() {
     streamGeneration += 1;
+    clearTimeout(hlsReconnectTimer);
+    hlsReconnectTimer = 0;
+    hlsRecoveryAttempts = 0;
+    hlsRecovering = false;
     if (mediaRecorder?.state === 'recording') mediaRecorder.stop();
     stopPersonTracking();
     stopMotionDetection();
@@ -822,20 +829,74 @@
 
   function connectHls(camera, generation = streamGeneration) {
     if (generation !== streamGeneration) return;
+    clearTimeout(hlsReconnectTimer);
+    hlsReconnectTimer = 0;
+    hls?.destroy();
+    hls = null;
     liveTransport = 'HLS';
     player.srcObject = null;
     const authorization = basicAuthorization(camera);
     const sourceUrl = selectedQuality === 'low' ? derivedLowStreamUrl(camera) : camera.streamUrl;
     if (window.Hls && Hls.isSupported()) {
-      hls = new Hls({ lowLatencyMode:true, liveSyncDurationCount:1, liveMaxLatencyDurationCount:2, maxLiveSyncPlaybackRate:2, maxBufferLength:2, maxMaxBufferLength:4, backBufferLength:3, xhrSetup:(xhr) => { if (authorization) xhr.setRequestHeader('Authorization', authorization); } });
+      hls = new Hls({
+        lowLatencyMode:true,
+        liveSyncDurationCount:2,
+        liveMaxLatencyDurationCount:5,
+        maxLiveSyncPlaybackRate:1.5,
+        maxBufferLength:8,
+        maxMaxBufferLength:16,
+        backBufferLength:8,
+        manifestLoadingMaxRetry:6,
+        manifestLoadingRetryDelay:500,
+        manifestLoadingMaxRetryTimeout:5000,
+        levelLoadingMaxRetry:6,
+        levelLoadingRetryDelay:500,
+        fragLoadingMaxRetry:6,
+        fragLoadingRetryDelay:500,
+        xhrSetup:(xhr) => { if (authorization) xhr.setRequestHeader('Authorization', authorization); },
+      });
       hls.loadSource(sourceUrl); hls.attachMedia(player);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => { renderQualityLevels(camera); player.play().catch(() => { setVideoLoading(false); toast('Tocca il video per avviare il live.'); }); });
-      hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal && generation === streamGeneration) { healthByCamera.set(camera.id, { ok:false, latency:0, checkedAt:Date.now() }); updateFocusedCameraStatus(camera); setVideoLoading(false); offline('Live non raggiungibile.', 'Controlla URL, CORS e credenziali HLS.'); } });
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (generation !== streamGeneration) return;
+        hlsRecoveryAttempts = 0;
+        hlsRecovering = false;
+        renderQualityLevels(camera);
+        player.play().catch(() => { setVideoLoading(false); toast('Tocca il video per avviare il live.'); });
+      });
+      hls.on(Hls.Events.ERROR, (_, data) => {
+        if (!data.fatal || generation !== streamGeneration) return;
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && hlsRecoveryAttempts < 2) {
+          hlsRecoveryAttempts += 1;
+          hlsRecovering = true;
+          hls?.recoverMediaError();
+          return;
+        }
+        scheduleHlsReconnect(camera, generation, data.details || data.type);
+      });
     } else if (player.canPlayType('application/vnd.apple.mpegurl') && !authorization) {
       player.src = sourceUrl; player.play().catch(() => setVideoLoading(false));
     } else {
       setVideoLoading(false); offline('HLS autenticato non supportato.', 'Prova un browser compatibile con hls.js.');
     }
+  }
+
+  function scheduleHlsReconnect(camera, generation, reason = 'stream interrupted') {
+    if (generation !== streamGeneration || archivePlayback || hlsReconnectTimer) return;
+    hlsRecovering = true;
+    hlsRecoveryAttempts += 1;
+    const delay = Math.min(6000, 500 * (2 ** Math.min(4, hlsRecoveryAttempts - 1)));
+    console.warn(`HLS interrotto (${reason}); nuovo tentativo tra ${delay} ms`);
+    hls?.destroy();
+    hls = null;
+    setVideoLoading(true);
+    $('liveTag').className = 'live-badge';
+    $('liveTag').textContent = 'RIPRISTINO';
+    $('emptyTitle').textContent = 'Riconnessione automatica';
+    $('emptyText').textContent = 'La telecamera ha interrotto brevemente il flusso. Riprovo senza interventi.';
+    hlsReconnectTimer = setTimeout(() => {
+      hlsReconnectTimer = 0;
+      if (generation === streamGeneration) connectHls(camera, generation);
+    }, delay);
   }
 
   function offline(title, detail) {
@@ -1506,6 +1567,11 @@
     });
     player.addEventListener('error', () => {
       if (archivePlayback) { setVideoLoading(false); offline('Clip non riproducibile.', 'Il link potrebbe essere scaduto: ricarica la timeline.'); return; }
+      const activeCamera = currentCamera();
+      if (activeCamera && (hls || hlsRecovering)) {
+        scheduleHlsReconnect(activeCamera, streamGeneration, 'errore elemento video');
+        return;
+      }
       const camera = currentCamera(); if (camera) { healthByCamera.set(camera.id, { ok:false, latency:0, checkedAt:Date.now() }); updateFocusedCameraStatus(camera); }
       setVideoLoading(false); offline('Errore di riproduzione.', 'Controlla il codec e il gateway HLS.');
     });
