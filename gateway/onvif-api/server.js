@@ -5,6 +5,8 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
+const { Transform } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 const { Cam } = require('onvif');
 
 const PORT = Number(process.env.PORT || 3000);
@@ -29,6 +31,7 @@ const SESSION_DAYS = Math.min(90, Math.max(1, Number(process.env.SESSION_DAYS ||
 const MAX_USERS = Math.min(10000, Math.max(1, Number(process.env.MAX_USERS || 500)));
 const ARCHIVE_DIR = process.env.ARCHIVE_DIR || '/archive';
 const ARCHIVE_SEGMENT_SECONDS = Math.min(3600, Math.max(10, Number(process.env.ARCHIVE_SEGMENT_SECONDS || 60)));
+const MANUAL_CLIP_MAX_BYTES = Math.min(1_000_000_000, Math.max(10_000_000, Number(process.env.MANUAL_CLIP_MAX_BYTES || 250_000_000)));
 const DROPBOX_APP_KEY = process.env.DROPBOX_APP_KEY || '';
 const DROPBOX_APP_SECRET = process.env.DROPBOX_APP_SECRET || '';
 const DROPBOX_REDIRECT_URI = process.env.DROPBOX_REDIRECT_URI || 'https://control.nelloonrender.duckdns.org/api/cloud/dropbox/callback';
@@ -398,7 +401,7 @@ function cameraArchiveAuthorized(camera) {
 function archiveEntries(camera, date) {
   const key = cameraArchiveKey(camera);
   if (!key || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !fs.existsSync(ARCHIVE_DIR)) return [];
-  const expression = new RegExp(`^${key}_${date}_(\\d{2})-(\\d{2})-(\\d{2})\\.mp4$`);
+  const expression = new RegExp(`^${key}_${date}_(\\d{2})-(\\d{2})-(\\d{2})(?:_manual-(\\d{1,5}))?\\.(mp4|webm)$`);
   return fs.readdirSync(ARCHIVE_DIR).flatMap((name) => {
     const match = expression.exec(name);
     if (!match) return [];
@@ -406,9 +409,9 @@ function archiveEntries(camera, date) {
     const stat = fs.statSync(filePath);
     // FFmpeg writes the MP4 index only when a segment closes. Hide the file
     // that is still growing so browsers never receive an incomplete movie.
-    if (!stat.isFile() || stat.size < 1024 || Date.now() - stat.mtimeMs < 5000) return [];
+    if (!stat.isFile() || stat.size < 1024 || (!match[4] && match[5] === 'mp4' && Date.now() - stat.mtimeMs < 5000)) return [];
     const start = new Date(`${date}T${match[1]}:${match[2]}:${match[3]}`);
-    return [{ name, start:start.toISOString(), duration:ARCHIVE_SEGMENT_SECONDS, size:stat.size }];
+    return [{ name, start:start.toISOString(), duration:match[4] ? Number(match[4]) : ARCHIVE_SEGMENT_SECONDS, size:stat.size, manual:Boolean(match[4]), type:match[5] }];
   }).sort((left, right) => left.start.localeCompare(right.start));
 }
 
@@ -416,7 +419,7 @@ function archiveFileForAccount(account, cameraId, name) {
   const vault = decryptVault(account);
   const camera = vault.cameras.find((item) => item.id === cameraId);
   const key = cameraArchiveKey(camera);
-  if (!camera || !cameraArchiveAuthorized(camera) || !key || path.basename(name) !== name || !name.startsWith(`${key}_`) || !name.endsWith('.mp4')) return null;
+  if (!camera || !cameraArchiveAuthorized(camera) || !key || path.basename(name) !== name || !name.startsWith(`${key}_`) || !/\.(mp4|webm)$/.test(name)) return null;
   const filePath = path.join(ARCHIVE_DIR, name);
   return fs.existsSync(filePath) && fs.statSync(filePath).isFile() ? filePath : null;
 }
@@ -424,7 +427,7 @@ function archiveFileForAccount(account, cameraId, name) {
 function sendArchiveFile(request, response, filePath, headers) {
   const stat = fs.statSync(filePath);
   const range = request.headers.range;
-  const common = { ...headers, 'Content-Type':'video/mp4', 'Accept-Ranges':'bytes', 'Cache-Control':'private, no-store' };
+  const common = { ...headers, 'Content-Type':filePath.endsWith('.webm') ? 'video/webm' : 'video/mp4', 'Accept-Ranges':'bytes', 'Cache-Control':'private, no-store' };
   if (!range) {
     response.writeHead(200, { ...common, 'Content-Length':stat.size });
     return fs.createReadStream(filePath).pipe(response);
@@ -436,6 +439,29 @@ function sendArchiveFile(request, response, filePath, headers) {
   if (start > end || start >= stat.size) { response.writeHead(416, { ...common, 'Content-Range':`bytes */${stat.size}` }); return response.end(); }
   response.writeHead(206, { ...common, 'Content-Length':end - start + 1, 'Content-Range':`bytes ${start}-${end}/${stat.size}` });
   return fs.createReadStream(filePath, { start, end }).pipe(response);
+}
+
+async function storeManualClip(request, targetPath) {
+  const declared = Number(request.headers['content-length'] || 0);
+  if (declared > MANUAL_CLIP_MAX_BYTES) throw new Error('Manual clip is too large');
+  fs.mkdirSync(ARCHIVE_DIR, { recursive:true });
+  const temporary = `${targetPath}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+  let bytes = 0;
+  const limiter = new Transform({
+    transform(chunk, encoding, callback) {
+      bytes += chunk.length;
+      callback(bytes > MANUAL_CLIP_MAX_BYTES ? new Error('Manual clip is too large') : null, chunk);
+    },
+  });
+  try {
+    await pipeline(request, limiter, fs.createWriteStream(temporary, { flags:'wx', mode:0o600 }));
+    if (bytes < 1024) throw new Error('Manual clip is empty');
+    fs.renameSync(temporary, targetPath);
+    return bytes;
+  } catch (error) {
+    fs.rmSync(temporary, { force:true });
+    throw error;
+  }
 }
 
 function cloudStatus(vault) {
@@ -772,6 +798,37 @@ const server = http.createServer(async (request, response) => {
     } catch (error) {
       console.error(`Archive: ${error.message}`);
       return send(response, 500, { error:'Archive temporarily unavailable' }, headers);
+    }
+  }
+
+  if (pathname === '/api/archive/manual' && request.method === 'POST') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    try {
+      const data = loadAccounts();
+      const account = accountFromSession(session, data);
+      if (!account) return send(response, 401, { error:'Unauthorized' }, headers);
+      const vault = decryptVault(account);
+      const cameraId = cleanText(requestUrl.searchParams.get('cameraId'), 80);
+      const camera = vault.cameras.find((item) => item.id === cameraId);
+      if (!camera) return send(response, 404, { error:'Camera not found' }, headers);
+      if (!cameraArchiveAuthorized(camera)) return send(response, 403, { error:'Archive access is not configured for this camera' }, headers);
+      if (!String(request.headers['content-type'] || '').toLowerCase().startsWith('video/webm')) return send(response, 415, { error:'Only WebM manual clips are accepted' }, headers);
+      const stamp = cleanText(requestUrl.searchParams.get('stamp'), 19);
+      if (!/^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/.test(stamp)) return send(response, 400, { error:'Invalid clip timestamp' }, headers);
+      const duration = Math.min(21600, Math.max(1, Math.round(Number(requestUrl.searchParams.get('duration') || 1))));
+      const key = cameraArchiveKey(camera);
+      if (!key) return send(response, 409, { error:'Archive key is not configured for this camera' }, headers);
+      const name = `${key}_${stamp}_manual-${duration}.webm`;
+      const size = await storeManualClip(request, path.join(ARCHIVE_DIR, name));
+      vault.events.unshift(vaultEvent('clip', 'Registrazione manuale salvata', `${camera.name}: ${name}`));
+      vault.events = vault.events.slice(0, 100);
+      account.vault = encryptVault(account.id, vault);
+      saveAccounts(data);
+      return send(response, 201, { ok:true, name, size, duration }, headers);
+    } catch (error) {
+      const invalid = /^(Manual clip is too large|Manual clip is empty)/.test(error.message);
+      console.error(`Manual archive: ${invalid ? error.message : 'upload failed'}`);
+      return send(response, invalid ? 413 : 500, { error:invalid ? error.message : 'Manual clip could not be saved' }, headers);
     }
   }
 

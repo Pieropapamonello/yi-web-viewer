@@ -27,6 +27,7 @@
   let chunks = [];
   let recordingAnimation = 0;
   let recordingStream = null;
+  let recordingStartedAt = 0;
   let toastTimer = null;
   let deferredInstallPrompt = null;
   let draggedId = '';
@@ -1042,12 +1043,13 @@
       const preferredMime = MediaRecorder.isTypeSupported?.('video/webm;codecs=vp8,opus') ? 'video/webm;codecs=vp8,opus' : 'video/webm';
       chunks = []; mediaRecorder = new MediaRecorder(recordingStream, { mimeType:preferredMime });
       mediaRecorder.ondataavailable = (event) => event.data.size && chunks.push(event.data);
-      mediaRecorder.onstart = () => { $('recordButton').classList.add('recording'); $('recordButton').querySelector('span').textContent = 'Ferma'; };
+      mediaRecorder.onstart = () => { recordingStartedAt = Date.now(); $('recordButton').classList.add('recording'); $('recordButton').querySelector('span').textContent = 'Ferma'; };
       mediaRecorder.onstop = () => {
+        const startedAt = recordingStartedAt || Date.now(); recordingStartedAt = 0;
         cancelAnimationFrame(recordingAnimation); recordingAnimation = 0;
         recordingStream?.getTracks().forEach((track) => track.stop()); recordingStream = null;
         $('recordButton').classList.remove('recording'); $('recordButton').querySelector('span').textContent = 'Registra';
-        addRecording(new Blob(chunks, { type:preferredMime }), camera);
+        addRecording(new Blob(chunks, { type:preferredMime }), camera, startedAt);
       };
       mediaRecorder.start(1000);
     } catch {
@@ -1096,10 +1098,31 @@
     } catch { $('recordingEmpty').hidden = false; }
   }
 
-  async function addRecording(blob, recordedCamera = currentCamera()) {
+  function archiveStamp(timestamp) {
+    const date = new Date(timestamp); const pad = (value) => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+  }
+
+  async function uploadManualRecording(blob, camera, startedAt) {
+    const duration = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    const query = new URLSearchParams({ cameraId:camera.id, stamp:archiveStamp(startedAt), duration:String(duration) });
+    return gatewayFetch(`/api/archive/manual?${query}`, { method:'POST', headers:{ 'Content-Type':'video/webm' }, body:blob });
+  }
+
+  async function addRecording(blob, recordedCamera = currentCamera(), startedAt = Date.now()) {
     const camera = recordedCamera; if (!camera) return;
-    try { await saveRecording(blob, camera); await loadRecordings(camera.id); await updateStorageEstimate(); recordActivity('clip', 'Registrazione salvata', `${camera.name}: clip locale da ${formatBytes(blob.size)}.`); toast('Clip salvata in modo persistente su questo dispositivo.', 'success'); }
-    catch { toast('Impossibile salvare la clip: controlla lo spazio disponibile.', 'error'); }
+    try {
+      const result = await uploadManualRecording(blob, camera, startedAt);
+      await loadArchive(camera.id);
+      recordActivity('clip', 'Registrazione manuale salvata', `${camera.name}: ${result.name} · ${formatBytes(result.size || blob.size)}.`);
+      toast('Clip salvata nella cartella registrazioni del gateway.', 'success');
+    } catch (gatewayError) {
+      try {
+        await saveRecording(blob, camera); await loadRecordings(camera.id); await updateStorageEstimate();
+        recordActivity('clip', 'Registrazione salvata nel browser', `${camera.name}: ripiego locale da ${formatBytes(blob.size)}.`);
+        toast('Gateway non raggiungibile: clip conservata nel browser.', 'error');
+      } catch { toast(`Impossibile salvare la clip: ${gatewayError.message}`, 'error'); }
+    }
   }
 
   async function loadCloudStatus() {

@@ -15,7 +15,7 @@ Una web app multiutente senza pubblicita' per vedere e configurare telecamere HL
 - PTZ reattivo con comando alla pressione/swipe, tre intensità, frecce da tastiera, feedback aptico e recupero immediato del bordo live;
 - data e orologio con secondi sovrapposti al live;
 - rilevamento locale delle variazioni d'immagine e cronologia giornaliera con indicatori colorati;
-- registrazione continua Docker in MP4 da un minuto, barra oraria al secondo e playback con seek tramite URL firmati;
+- registrazione manuale dalla web app nella cartella locale del gateway, barra oraria al secondo e playback con seek tramite URL firmati;
 - retention automatica dell'archivio e backup Dropbox manuale/automatico per account;
 - tema chiaro/scuro/sistema, modalità compatta e preferenze sincronizzate;
 - timeline account cifrata e persistente;
@@ -53,7 +53,9 @@ Il live interattivo usa invece `http://localhost:8891/ipc365-webrtc/whep`: il pr
 
 Il servizio `ipc365-bridge-low` genera anche `http://localhost:8890/ipc365-low/index.m3u8` a 854x480. Il selettore qualità passa realmente tra questa sorgente e quella originale; non è un semplice controllo cosmetico.
 
-Il servizio `ipc365-recorder` salva segmenti MP4 da un minuto nel volume Docker `camera-archive`. Il profilo 480p contiene data e ora di Roma impresse direttamente nei fotogrammi. `archive-retention` elimina i file più vecchi di `ARCHIVE_RETENTION_DAYS` (7 per impostazione predefinita). Il gateway monta lo stesso volume e genera link di riproduzione firmati, legati all'account e validi per dieci minuti; supporta anche le richieste HTTP Range necessarie al seek.
+Il pulsante `Registra` crea una clip WebM con data e ora impresse nei fotogrammi e la invia, tramite sessione autenticata, alla cartella montata dal gateway su `/archive`. Nello stack locale questa cartella è `C:/mediaflow/registrazioni`. Se il gateway non è raggiungibile, il browser conserva una copia di emergenza in IndexedDB. `archive-retention` elimina i file più vecchi di `ARCHIVE_RETENTION_DAYS` (7 per impostazione predefinita). Il gateway genera link di riproduzione firmati, legati all'account e validi per dieci minuti, con supporto HTTP Range.
+
+La registrazione continua è disabilitata per impostazione predefinita. Il servizio opzionale `ipc365-recorder` appartiene al profilo Compose `continuous-recording` e viene avviato soltanto specificando esplicitamente `--profile continuous-recording`.
 
 ### Dropbox e MEGA
 
