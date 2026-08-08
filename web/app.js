@@ -391,7 +391,7 @@
 
   function trackingAvailable() {
     const camera = currentCamera();
-    return Boolean(camera?.ptz && camera.apiBaseUrl && camera.apiToken && liveTransport === 'WebRTC' && !archivePlayback && !player.paused && player.readyState >= 2);
+    return Boolean(camera?.ptz && camera.apiBaseUrl && camera.apiToken && ['WebRTC', 'HLS'].includes(liveTransport) && !archivePlayback && !player.paused && player.readyState >= 2);
   }
 
   function updateTrackingAvailability() {
@@ -402,7 +402,7 @@
       button.disabled = true; $('trackingHint').textContent = 'Caricamento modello locale…';
     } else {
       const available = trackingAvailable(); button.disabled = !available;
-      $('trackingHint').textContent = available ? 'Pronto · elaborazione sul dispositivo' : liveTransport === 'HLS' ? 'Passa a WebRTC per ridurre la latenza' : 'Richiede live WebRTC e PTZ';
+      $('trackingHint').textContent = available ? liveTransport === 'WebRTC' ? 'Pronto · WebRTC a bassa latenza' : 'Pronto su HLS · risposta più lenta' : 'Richiede live video e PTZ';
     }
   }
 
@@ -426,7 +426,7 @@
 
   async function togglePersonTracking() {
     if (trackingEnabled || trackingStarting) { stopPersonTracking('Inseguimento persona interrotto.', true); return; }
-    if (!trackingAvailable()) return toast('Per seguire una persona servono WebRTC a bassa latenza e PTZ attivo.', 'error');
+    if (!trackingAvailable()) return toast('Per seguire una persona servono un live attivo e il PTZ configurato.', 'error');
     trackingStarting = true; updateTrackingAvailability(); $('trackingToggle').textContent = 'Caricamento…';
     try {
       await loadPersonDetector();
@@ -494,15 +494,17 @@
   }
 
   function steerTowardPerson(target) {
-    if (!target || trackingCommandInFlight || Date.now() - trackingLastCommandAt < 360) return;
+    const hlsMode = liveTransport === 'HLS';
+    if (!target || trackingCommandInFlight || Date.now() - trackingLastCommandAt < (hlsMode ? 720 : 360)) return;
     const deadZones = { relaxed:.18, normal:.13, precise:.09 }; const dead = deadZones[$('trackingSensitivity').value] || .13;
+    const effectiveDead = hlsMode ? Math.max(.17, dead) : dead;
     const errorX = target.cx - .5; const errorY = target.cy - .5;
-    if (Math.abs(errorX) <= dead && Math.abs(errorY) <= dead) { $('trackingLiveState').querySelector('span').textContent = 'Persona centrata'; return; }
+    if (Math.abs(errorX) <= effectiveDead && Math.abs(errorY) <= effectiveDead) { $('trackingLiveState').querySelector('span').textContent = 'Persona centrata'; return; }
     const horizontal = Math.abs(errorX) >= Math.abs(errorY);
     const action = horizontal ? (errorX < 0 ? 'left' : 'right') : (errorY < 0 ? 'up' : 'down');
     const magnitude = horizontal ? Math.abs(errorX) : Math.abs(errorY);
     const step = magnitude > .32 ? 8 : magnitude > .2 ? 5 : 3;
-    const durationMs = magnitude > .32 ? 180 : magnitude > .2 ? 140 : 100;
+    const durationMs = hlsMode ? (magnitude > .32 ? 150 : magnitude > .2 ? 110 : 80) : (magnitude > .32 ? 180 : magnitude > .2 ? 140 : 100);
     trackingCommandInFlight = true; trackingLastCommandAt = Date.now();
     $('trackingLiveState').querySelector('span').textContent = `Segue · ${action}`;
     sendPtz(action, step, { tracking:true, quiet:true, durationMs }).finally(() => { trackingCommandInFlight = false; });

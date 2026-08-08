@@ -152,7 +152,7 @@ Il Worker in `cloudflare/smart-detect` espone un endpoint compatibile con la Res
 
 ### Inseguimento persona locale
 
-Il pulsante **Segui persona** carica su richiesta MediaPipe Object Detector `0.10.35` ed EfficientDet Lite0. Il modello elabora il video nel browser, filtra esclusivamente la categoria `person` e non esegue riconoscimento facciale. Il riquadro verde indica il soggetto seguito; quando sono presenti più persone è possibile toccare un riquadro per cambiare soggetto. Una zona neutra configurabile riduce le oscillazioni e il gateway usa impulsi PTZ da 100–180 ms. Un movimento manuale, il cambio camera, una scheda nascosta o la perdita prolungata del soggetto fermano l'inseguimento. La funzione richiede WebRTC e resta sempre disattivata all'avvio.
+Il pulsante **Segui persona** carica su richiesta MediaPipe Object Detector `0.10.35` ed EfficientDet Lite0. Il modello elabora il video nel browser, filtra esclusivamente la categoria `person` e non esegue riconoscimento facciale. Il riquadro verde indica il soggetto seguito; quando sono presenti più persone è possibile toccare un riquadro per cambiare soggetto. Una zona neutra configurabile riduce le oscillazioni e il gateway usa impulsi PTZ da 80–180 ms. WebRTC è preferito; con HLS l'app applica una zona neutra più ampia e comandi meno frequenti. Un movimento manuale, il cambio camera, una scheda nascosta o la perdita prolungata del soggetto fermano l'inseguimento. La funzione resta sempre disattivata all'avvio.
 
 Configurazione gateway locale:
 
