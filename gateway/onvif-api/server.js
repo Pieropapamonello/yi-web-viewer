@@ -112,8 +112,22 @@ function stopIpcTalk() {
   ipcTalkSocket?.end(); ipcTalkSocket = null;
 }
 
-function startFrediTalk() {
-  if (frediTalkSocket && !frediTalkSocket.destroyed) return Promise.resolve();
+function launchFrediTalkDaemon() {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host:FREDI_PTZ_HOST, port:FREDI_PTZ_PORT });
+    const timers = [];
+    const timeout = setTimeout(() => { socket.destroy(); reject(new Error('FREDI Telnet timeout')); }, 5000);
+    socket.once('connect', () => {
+      timers.push(setTimeout(() => socket.write('root\r\n'), 120));
+      timers.push(setTimeout(() => socket.write('\r\n'), 320));
+      timers.push(setTimeout(() => socket.write(`killall talkd 2>/dev/null; /var/tmp/sd/talkd '${FREDI_TALK_SECRET}' ${FREDI_TALK_PORT} 0 </dev/null >/var/tmp/sd/talkd.log 2>&1 &\r\n`), 520));
+      timers.push(setTimeout(() => { clearTimeout(timeout); socket.destroy(); resolve(); }, 1400));
+    });
+    socket.once('error', (error) => { clearTimeout(timeout); timers.forEach(clearTimeout); reject(error); });
+  });
+}
+
+function connectFrediTalk() {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host:FREDI_PTZ_HOST, port:FREDI_TALK_PORT });
     const timeout = setTimeout(() => { socket.destroy(); reject(new Error('FREDI audio driver not reachable')); }, 5000);
@@ -121,6 +135,12 @@ function startFrediTalk() {
     socket.once('error', (error) => { clearTimeout(timeout); if (frediTalkSocket === socket) frediTalkSocket = null; reject(error); });
     socket.on('close', () => { if (frediTalkSocket === socket) frediTalkSocket = null; });
   });
+}
+
+async function startFrediTalk() {
+  if (frediTalkSocket && !frediTalkSocket.destroyed) return;
+  try { await connectFrediTalk(); }
+  catch { await launchFrediTalkDaemon(); await new Promise((resolve) => setTimeout(resolve, 350)); await connectFrediTalk(); }
 }
 
 async function writeFrediTalk(encoded) {
