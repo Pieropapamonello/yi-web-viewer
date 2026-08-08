@@ -23,6 +23,9 @@ const IPC365_PTZ_PORT = Number(process.env.IPC365_PTZ_PORT || 23456);
 const IPC365_PTZ_STEP = Math.min(30, Math.max(3, Number(process.env.IPC365_PTZ_STEP || 12)));
 const IPC365_SOURCE_ID = process.env.IPC365_SOURCE_ID || 'af93c63b';
 const IPC365_DEVICE_ID = process.env.IPC365_DEVICE_ID || '09f74b01';
+const FREDI_PTZ_HOST = process.env.FREDI_PTZ_HOST || '192.168.1.78';
+const FREDI_PTZ_PORT = Number(process.env.FREDI_PTZ_PORT || 23);
+const FREDI_PTZ_COMMAND = process.env.FREDI_PTZ_COMMAND || '/var/tmp/sd/ptzctl';
 const DASHBOARD_PASSWORD_ITERATIONS = Number(process.env.DASHBOARD_PASSWORD_ITERATIONS || 310000);
 const AUTH_SECRET = process.env.AUTH_SECRET || '';
 const VAULT_KEY = process.env.VAULT_KEY || '';
@@ -109,6 +112,49 @@ function call(camera, method, options = {}) {
 
 function stop(camera) {
   return call(camera, 'stop', { panTilt: true, zoom: true }).catch(() => undefined);
+}
+
+function frediPtz(action, step, durationMs) {
+  const directions = new Set(['up', 'down', 'left', 'right', 'stop']);
+  if (!directions.has(action)) return Promise.reject(new Error('Invalid FREDI PTZ direction'));
+  const normalizedStep = Math.min(30, Math.max(3, step));
+  // The RTS3903N driver exposes the interval between motor phases: a lower
+  // value is faster. Convert the dashboard's Fine -> Fast scale accordingly.
+  const timing = Math.round(40 - ((normalizedStep - 3) / 27) * 35);
+  const duration = Math.min(1200, Math.max(40, durationMs));
+  const command = `${FREDI_PTZ_COMMAND} ${action} ${duration} ${timing}; echo __FREDI_PTZ_$?__`;
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host:FREDI_PTZ_HOST, port:FREDI_PTZ_PORT });
+    let output = '';
+    let settled = false;
+    const timers = [];
+    const timeout = setTimeout(() => finish(new Error('FREDI PTZ Telnet timeout')), 5000);
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      timers.forEach(clearTimeout);
+      socket.destroy();
+      error ? reject(error) : resolve({ speed:normalizedStep, timing, durationMs:duration });
+    };
+    socket.on('connect', () => {
+      // Lobster's tiny Telnet daemon emits non-standard negotiation bytes.
+      // A short deterministic login sequence is more reliable than parsing
+      // its prompt and keeps command latency below one second.
+      timers.push(setTimeout(() => socket.write('root\r\n'), 120));
+      timers.push(setTimeout(() => socket.write('\r\n'), 320));
+      timers.push(setTimeout(() => socket.write(`${command}\r\n`), 520));
+    });
+    socket.on('data', (chunk) => {
+      output += chunk.toString('latin1').replace(/[^\x09\x0a\x0d\x20-\x7e]/g, '');
+      const result = output.match(/__FREDI_PTZ_(\d+)__/);
+      if (result) finish(result[1] === '0' ? null : new Error(`FREDI PTZ driver exited with code ${result[1]}`));
+    });
+    socket.on('error', finish);
+    socket.on('close', () => {
+      if (!/__FREDI_PTZ_0__/.test(output)) finish(new Error('FREDI PTZ Telnet connection closed'));
+    });
+  });
 }
 
 const IPC365_HEADER = Buffer.from([
@@ -672,6 +718,9 @@ const server = http.createServer(async (request, response) => {
   if (pathname === '/health' && request.method === 'GET') {
     return send(response, 200, { ok: true, authReady: AUTH_READY, publicRegistration: true }, headers);
   }
+  if (pathname === '/fredi/health' && request.method === 'GET') {
+    return send(response, 200, { ok:true, camera:'fredi-g1', ptz:true }, headers);
+  }
 
   if (pathname === '/api/auth/register' && request.method === 'POST') {
     if (!AUTH_READY) return send(response, 503, { error: 'Account registration is not configured' }, headers);
@@ -1093,6 +1142,20 @@ const server = http.createServer(async (request, response) => {
 
   try {
     const body = await readJson(request);
+    if (pathname === '/fredi/api/ptz' && request.method === 'POST') {
+      const step = Math.min(30, Math.max(3, Number(body.step) || 12));
+      const durationMs = Math.min(1500, Math.max(40, Number(body.durationMs) || 180));
+      const result = await frediPtz(body.action, step, durationMs);
+      console.log(`FREDI PTZ ${body.action} step ${step} completed in ${result.durationMs}ms`);
+      return send(response, 200, { ok:true, action:body.action, step, ...result }, headers);
+    }
+    if (pathname === '/fredi/api/capabilities' && request.method === 'GET') {
+      return send(response, 200, {
+        ok:true,
+        protocol:'rts3903n-telnet',
+        features:{ liveVideo:true, liveAudio:false, ptz:true, snapshot:true, localRecording:true, orientation:true, light:false, guard:false, talk:false, sdPlayback:false, cloudPlayback:false },
+      }, headers);
+    }
     if (pathname === '/api/ptz' && request.method === 'POST') {
       const step = Math.min(30, Math.max(3, Number(body.step) || IPC365_PTZ_STEP));
       const durationMs = Math.min(2000, Math.max(80, Number(body.durationMs) || MOVE_DURATION));

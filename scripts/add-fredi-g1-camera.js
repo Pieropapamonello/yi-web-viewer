@@ -41,9 +41,12 @@ if (!account) throw new Error(`Account ${username} not found`);
 const vault = decrypt(account);
 vault.cameras ||= [];
 
-if (!vault.cameras.some((camera) => camera.archiveKey === 'yi' || camera.streamUrl?.includes('/yi/'))) {
-  const credentialSource = vault.cameras.find((camera) => camera.streamUsername && camera.streamPassword) || {};
-  vault.cameras.push({
+const credentialSource = vault.cameras.find((camera) => camera.apiToken) ||
+  vault.cameras.find((camera) => camera.streamUsername && camera.streamPassword) || {};
+let fredi = vault.cameras.find((camera) => camera.archiveKey === 'yi' || camera.streamUrl?.includes('/yi/'));
+
+if (!fredi) {
+  fredi = {
     id:crypto.randomUUID(),
     name:'FREDI G1',
     model:'FREDI G1 · firmware RTSP',
@@ -55,13 +58,14 @@ if (!vault.cameras.some((camera) => camera.archiveKey === 'yi' || camera.streamU
     webrtcUrl:'https://rtc.nelloonrender.duckdns.org/yi-webrtc/whep',
     streamUsername:credentialSource.streamUsername || '',
     streamPassword:credentialSource.streamPassword || '',
-    apiBaseUrl:'',
-    apiToken:'',
-    ptz:false,
+    apiBaseUrl:'https://control.nelloonrender.duckdns.org/fredi',
+    apiToken:credentialSource.apiToken || '',
+    ptz:true,
     rotation:0,
     motionDetection:true,
     archiveKey:'yi',
-  });
+  };
+  vault.cameras.push(fredi);
   vault.events ||= [];
   vault.events.unshift({
     id:crypto.randomUUID(),
@@ -71,11 +75,16 @@ if (!vault.cameras.some((camera) => camera.archiveKey === 'yi' || camera.streamU
     createdAt:new Date().toISOString(),
   });
   vault.events = vault.events.slice(0, 100);
-  account.vault = encrypt(account.id, vault);
-  const temporary = `${accountsFile}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(data), { mode:0o600 });
-  fs.renameSync(temporary, accountsFile);
-  console.log('FREDI G1 added');
+  console.log('FREDI G1 added with PTZ');
 } else {
-  console.log('FREDI G1 already present');
+  fredi.apiBaseUrl = 'https://control.nelloonrender.duckdns.org/fredi';
+  fredi.apiToken = fredi.apiToken || credentialSource.apiToken || '';
+  fredi.ptz = true;
+  console.log('FREDI G1 PTZ updated');
 }
+
+if (!fredi.apiToken) throw new Error('No gateway API token is available in the target vault');
+account.vault = encrypt(account.id, vault);
+const temporary = `${accountsFile}.${process.pid}.tmp`;
+fs.writeFileSync(temporary, JSON.stringify(data), { mode:0o600 });
+fs.renameSync(temporary, accountsFile);
