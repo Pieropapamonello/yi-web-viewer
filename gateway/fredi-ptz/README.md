@@ -9,7 +9,7 @@ Every directional command has a bounded duration and ends with an explicit
 stop command. The helper accepts:
 
 ```text
-ptzctl <up|down|left|right|stop> [milliseconds] [timing]
+ptzctl <up|down|left|right|stop|position|status> [milliseconds] [timing]
 ```
 
 Build the MIPS/uClibc binary from the repository root:

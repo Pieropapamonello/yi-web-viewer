@@ -8,8 +8,10 @@
 #include <unistd.h>
 
 #define SSP_DEVICE "/dev/ssp"
+#define SSP_POSITION 1
 #define SSP_MOVE 2
 #define SSP_STOP 3
+#define SSP_STATUS 4
 #define SSP_SET_TIMING 5
 
 /* Layout copied by the camera's ssp_ms41909 kernel driver. */
@@ -39,11 +41,13 @@ static int stop_motors(int fd) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: ptzctl <up|down|left|right|stop> [milliseconds] [timing]\n");
+        fprintf(stderr, "usage: ptzctl <up|down|left|right|stop|position|status> [milliseconds] [timing]\n");
         return 2;
     }
 
-    const int direction = direction_for(argv[1]);
+    const int wants_status = !strcmp(argv[1], "status");
+    const int wants_position = !strcmp(argv[1], "position");
+    const int direction = (wants_status || wants_position) ? 0 : direction_for(argv[1]);
     if (direction < 0) {
         fprintf(stderr, "invalid direction\n");
         return 2;
@@ -60,6 +64,17 @@ int main(int argc, char **argv) {
     if (fd < 0) {
         perror("open " SSP_DEVICE);
         return 1;
+    }
+
+    if (wants_status || wants_position) {
+        int32_t status[8] = {0};
+        const int request = wants_position ? SSP_POSITION : SSP_STATUS;
+        const int result = ioctl(fd, request, status);
+        if (result < 0) perror(wants_position ? "ioctl position" : "ioctl status");
+        else if (wants_position) printf("x=%ld y=%ld\n", (long)status[0], (long)status[1]);
+        else printf("x=%ld y=%ld\n", (long)status[6], (long)status[7]);
+        close(fd);
+        return result < 0 ? 1 : 0;
     }
 
     if (direction == 0) {

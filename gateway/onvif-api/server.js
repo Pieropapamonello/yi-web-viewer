@@ -1144,7 +1144,10 @@ const server = http.createServer(async (request, response) => {
     const body = await readJson(request);
     if (pathname === '/fredi/api/ptz' && request.method === 'POST') {
       const step = Math.min(30, Math.max(3, Number(body.step) || 12));
-      const durationMs = Math.min(1500, Math.max(40, Number(body.durationMs) || 180));
+      const requestedDuration = Number(body.durationMs);
+      const defaultDuration = Math.min(850, 150 + (step * 25));
+      const durationMs = Math.min(1200, Math.max(40,
+        Number.isFinite(requestedDuration) && requestedDuration > 0 ? requestedDuration : defaultDuration));
       const result = await frediPtz(body.action, step, durationMs);
       console.log(`FREDI PTZ ${body.action} step ${step} completed in ${result.durationMs}ms`);
       return send(response, 200, { ok:true, action:body.action, step, ...result }, headers);
