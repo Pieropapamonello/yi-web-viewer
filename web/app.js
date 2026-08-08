@@ -70,6 +70,7 @@
   let talkSamples = [];
   let talkQueue = Promise.resolve();
   let talking = false;
+  let talkRequested = false;
 
   function safeJson(value, fallback) {
     try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
@@ -388,9 +389,12 @@
 
   async function startTalking(event) {
     event?.preventDefault(); if (talking || $('talkFeature').disabled) return;
+    talkRequested = true;
     try {
       talkStream = await navigator.mediaDevices.getUserMedia({ audio:{ channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
+      if (!talkRequested) { talkStream.getTracks().forEach((track) => track.stop()); talkStream = null; return; }
       await sendTalk('start');
+      if (!talkRequested) { await sendTalk('stop').catch(() => {}); talkStream.getTracks().forEach((track) => track.stop()); talkStream = null; return; }
       talkContext = new AudioContext({ latencyHint:'interactive' });
       const source = talkContext.createMediaStreamSource(talkStream);
       talkProcessor = talkContext.createScriptProcessor(2048, 1, 1);
@@ -408,6 +412,7 @@
   }
 
   async function stopTalking() {
+    talkRequested = false;
     const wasTalking = talking; talking = false;
     talkProcessor?.disconnect(); talkProcessor = null; talkStream?.getTracks().forEach((track) => track.stop()); talkStream = null;
     if (talkContext) { await talkContext.close().catch(() => {}); talkContext = null; }
