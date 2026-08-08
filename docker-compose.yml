@@ -28,12 +28,20 @@ services:
       - warning
       - -rtsp_transport
       - tcp
+      - -allowed_media_types
+      - video
+      - -i
+      - ${IPC365_RTSP_URL:?Set IPC365_RTSP_URL in .env before starting Docker}
+      - -rtsp_transport
+      - tcp
+      - -allowed_media_types
+      - audio
       - -i
       - ${IPC365_RTSP_URL:?Set IPC365_RTSP_URL in .env before starting Docker}
       - -map
       - 0:v:0
       - -map
-      - 0:a:0?
+      - 1:a:0?
       - -c:v
       - copy
       - -c:a
