@@ -18,6 +18,11 @@
   let authMode = 'login';
   let searchText = '';
   let hls = null;
+  let peerConnection = null;
+  let whepResourceUrl = '';
+  let whepAuthorization = '';
+  let streamGeneration = 0;
+  let liveTransport = '';
   let mediaRecorder = null;
   let chunks = [];
   let recordingAnimation = 0;
@@ -435,7 +440,7 @@
     selectedQuality = 'auto';
     $('cameraName').textContent = camera.name;
     $('cameraMeta').textContent = [camera.model, camera.location].filter(Boolean).join(' · ') || 'Modello e posizione non specificati';
-    $('detailVideo').textContent = camera.streamUrl ? 'HLS configurato' : 'Non configurato';
+    $('detailVideo').textContent = camera.webrtcUrl || derivedWebRtcUrl(camera) ? 'WebRTC + HLS fallback' : camera.streamUrl ? 'HLS configurato' : 'Non configurato';
     $('detailLocation').textContent = camera.location || 'Non indicata';
     $('detailNotes').textContent = camera.notes || 'Nessuna';
     $('detailPtz').textContent = camera.ptz && camera.apiBaseUrl && camera.apiToken ? 'Attivo' : 'Non configurato';
@@ -467,10 +472,12 @@
   }
 
   function disconnectStream() {
+    streamGeneration += 1;
     if (mediaRecorder?.state === 'recording') mediaRecorder.stop();
     stopMotionDetection();
     hls?.destroy(); hls = null;
-    player.pause(); player.removeAttribute('src'); player.load();
+    stopWebRtc();
+    player.pause(); player.srcObject = null; player.removeAttribute('src'); player.load();
     $('stage').classList.remove('playing', 'archive');
     $('cameraStatusDot').classList.remove('live');
     $('liveTag').className = 'live-badge'; $('liveTag').textContent = 'OFFLINE';
@@ -479,17 +486,118 @@
 
   function connectStream(camera) {
     archivePlayback = false;
+    const generation = ++streamGeneration;
     streamConnectStarted = performance.now();
     setVideoLoading(true);
     $('emptyTitle').textContent = 'Connessione in corso';
     $('emptyText').textContent = 'Il gateway sta preparando il flusso live.';
-    const authorization = camera.streamUsername && camera.streamPassword ? `Basic ${btoa(`${camera.streamUsername}:${camera.streamPassword}`)}` : '';
+    const webrtcUrl = camera.webrtcUrl || derivedWebRtcUrl(camera);
+    if (selectedQuality === 'auto' && webrtcUrl && window.RTCPeerConnection) {
+      connectWebRtc(camera, webrtcUrl, generation).catch((error) => {
+        if (generation !== streamGeneration) return;
+        console.warn('WebRTC non disponibile, fallback HLS:', error);
+        stopWebRtc();
+        connectHls(camera, generation);
+      });
+      return;
+    }
+    connectHls(camera, generation);
+  }
+
+  function derivedWebRtcUrl(camera) {
+    if (!camera?.streamUrl) return '';
+    try {
+      const url = new URL(camera.streamUrl);
+      if (url.hostname === 'camera.nelloonrender.duckdns.org') {
+        url.hostname = 'rtc.nelloonrender.duckdns.org';
+        const stream = url.pathname.split('/').filter(Boolean)[0]?.replace(/-low$/, '') || 'ipc365';
+        url.pathname = `/${stream}-webrtc/whep`;
+        url.search = '';
+        return url.toString();
+      }
+    } catch { /* custom HLS URL: WebRTC must be entered manually */ }
+    return '';
+  }
+
+  function basicAuthorization(camera) {
+    return camera.streamUsername && camera.streamPassword ? `Basic ${btoa(unescape(encodeURIComponent(`${camera.streamUsername}:${camera.streamPassword}`)))}` : '';
+  }
+
+  function waitForIceGathering(connection, timeout = 2500) {
+    if (connection.iceGatheringState === 'complete') return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => { connection.removeEventListener('icegatheringstatechange', changed); clearTimeout(timer); resolve(); };
+      const changed = () => { if (connection.iceGatheringState === 'complete') done(); };
+      const timer = setTimeout(done, timeout);
+      connection.addEventListener('icegatheringstatechange', changed);
+    });
+  }
+
+  async function connectWebRtc(camera, url, generation) {
+    const connection = new RTCPeerConnection();
+    peerConnection = connection;
+    liveTransport = 'WebRTC';
+    const media = new MediaStream();
+    player.srcObject = media;
+    connection.addTransceiver('video', { direction:'recvonly' });
+    connection.addTransceiver('audio', { direction:'recvonly' });
+    connection.addEventListener('track', (event) => {
+      if (generation !== streamGeneration) return;
+      if (!media.getTracks().some((track) => track.id === event.track.id)) media.addTrack(event.track);
+      player.play().catch(() => { setVideoLoading(false); toast('Tocca il video per avviare il live.'); });
+    });
+    connection.addEventListener('connectionstatechange', () => {
+      if (generation !== streamGeneration) return;
+      if (connection.connectionState === 'failed') {
+        stopWebRtc();
+        connectHls(camera, generation);
+      }
+    });
+    await connection.setLocalDescription(await connection.createOffer());
+    await waitForIceGathering(connection);
+    if (generation !== streamGeneration) return;
+    const authorization = basicAuthorization(camera);
+    whepAuthorization = authorization;
+    const response = await fetch(url, {
+      method:'POST', cache:'no-store',
+      headers:{ 'Content-Type':'application/sdp', ...(authorization ? { Authorization:authorization } : {}) },
+      body:connection.localDescription.sdp,
+    });
+    if (!response.ok) throw new Error(`WHEP ${response.status}`);
+    const answer = await response.text();
+    const location = response.headers.get('Location');
+    whepResourceUrl = location ? new URL(location, url).toString() : '';
+    await connection.setRemoteDescription({ type:'answer', sdp:answer });
+    setTimeout(() => {
+      if (generation === streamGeneration && connection.connectionState !== 'connected') {
+        stopWebRtc();
+        connectHls(camera, generation);
+      }
+    }, 6000);
+  }
+
+  function stopWebRtc() {
+    const resource = whepResourceUrl;
+    const authorization = whepAuthorization;
+    const connection = peerConnection;
+    whepResourceUrl = '';
+    whepAuthorization = '';
+    peerConnection = null;
+    connection?.close();
+    if (resource) fetch(resource, { method:'DELETE', keepalive:true, headers:authorization ? { Authorization:authorization } : {} }).catch(() => {});
+  }
+
+  function connectHls(camera, generation = streamGeneration) {
+    if (generation !== streamGeneration) return;
+    liveTransport = 'HLS';
+    player.srcObject = null;
+    const authorization = basicAuthorization(camera);
     const sourceUrl = selectedQuality === 'low' ? derivedLowStreamUrl(camera) : camera.streamUrl;
     if (window.Hls && Hls.isSupported()) {
       hls = new Hls({ lowLatencyMode:true, liveSyncDurationCount:1, liveMaxLatencyDurationCount:2, maxLiveSyncPlaybackRate:2, maxBufferLength:2, maxMaxBufferLength:4, backBufferLength:3, xhrSetup:(xhr) => { if (authorization) xhr.setRequestHeader('Authorization', authorization); } });
       hls.loadSource(sourceUrl); hls.attachMedia(player);
       hls.on(Hls.Events.MANIFEST_PARSED, () => { renderQualityLevels(camera); player.play().catch(() => { setVideoLoading(false); toast('Tocca il video per avviare il live.'); }); });
-      hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) { healthByCamera.set(camera.id, { ok:false, latency:0, checkedAt:Date.now() }); updateFocusedCameraStatus(camera); setVideoLoading(false); offline('Live non raggiungibile.', 'Controlla URL, CORS e credenziali HLS.'); } });
+      hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal && generation === streamGeneration) { healthByCamera.set(camera.id, { ok:false, latency:0, checkedAt:Date.now() }); updateFocusedCameraStatus(camera); setVideoLoading(false); offline('Live non raggiungibile.', 'Controlla URL, CORS e credenziali HLS.'); } });
     } else if (player.canPlayType('application/vnd.apple.mpegurl') && !authorization) {
       player.src = sourceUrl; player.play().catch(() => setVideoLoading(false));
     } else {
@@ -616,11 +724,11 @@
 
   function openCameraDialog(id = '') {
     editingId = id;
-    const camera = cameras.find((item) => item.id === id) || { name:'', model:'', location:'', notes:'', favorite:false, streamUrl:'', streamLowUrl:'', streamUsername:'', streamPassword:'', apiBaseUrl:'', apiToken:'', ptz:false, motionDetection:true };
+    const camera = cameras.find((item) => item.id === id) || { name:'', model:'', location:'', notes:'', favorite:false, webrtcUrl:'', streamUrl:'', streamLowUrl:'', streamUsername:'', streamPassword:'', apiBaseUrl:'', apiToken:'', ptz:false, motionDetection:true };
     $('settingsTitle').textContent = id ? `Modifica ${camera.name}` : 'Aggiungi camera';
     $('nameInput').value = camera.name; $('modelInput').value = camera.model || ''; $('locationInput').value = camera.location || ''; $('notesInput').value = camera.notes || ''; $('favoriteInput').checked = Boolean(camera.favorite);
     $('motionInput').checked = camera.motionDetection !== false;
-    $('streamInput').value = camera.streamUrl || ''; $('streamLowInput').value = camera.streamLowUrl || ''; $('streamUsernameInput').value = camera.streamUsername || ''; $('streamPasswordInput').value = camera.streamPassword || '';
+    $('webrtcInput').value = camera.webrtcUrl || derivedWebRtcUrl(camera); $('streamInput').value = camera.streamUrl || ''; $('streamLowInput').value = camera.streamLowUrl || ''; $('streamUsernameInput').value = camera.streamUsername || ''; $('streamPasswordInput').value = camera.streamPassword || '';
     $('ptzInput').checked = Boolean(camera.ptz); $('apiInput').value = camera.apiBaseUrl || ''; $('apiTokenInput').value = camera.apiToken || '';
     $('deleteCamera').hidden = !id;
     updatePtzFields(); setCameraStep('general'); $('settingsDialog').showModal();
@@ -643,7 +751,7 @@
     if ($('ptzInput').checked && (!$('apiInput').value.trim() || !$('apiTokenInput').value)) { setCameraStep('control'); return toast('Per il PTZ servono URL gateway e token.', 'error'); }
     const previous = cameras.find((item) => item.id === editingId);
     const camera = {
-      id:editingId || crypto.randomUUID(), name, model:$('modelInput').value.trim(), location:$('locationInput').value.trim(), notes:$('notesInput').value.trim(), favorite:$('favoriteInput').checked, motionDetection:$('motionInput').checked, streamUrl:$('streamInput').value.trim(), streamLowUrl:$('streamLowInput').value.trim(),
+      id:editingId || crypto.randomUUID(), name, model:$('modelInput').value.trim(), location:$('locationInput').value.trim(), notes:$('notesInput').value.trim(), favorite:$('favoriteInput').checked, motionDetection:$('motionInput').checked, webrtcUrl:$('webrtcInput').value.trim(), streamUrl:$('streamInput').value.trim(), streamLowUrl:$('streamLowInput').value.trim(),
       streamUsername:$('streamUsernameInput').value.trim(), streamPassword:$('streamPasswordInput').value,
       apiBaseUrl:$('ptzInput').checked ? $('apiInput').value.trim() : '', apiToken:$('ptzInput').checked ? $('apiTokenInput').value : '', ptz:$('ptzInput').checked,
       rotation:previous?.rotation === 180 ? 180 : 0,
@@ -1091,7 +1199,7 @@
     $('stage').addEventListener('pointercancel', () => { gestureStart = null; $('gestureHint').hidden = true; });
     $('recordingList').addEventListener('click', (event) => { const button = event.target.closest('[data-delete-recording]'); if (button) deleteRecording(button.dataset.deleteRecording); });
     player.addEventListener('playing', () => {
-      setVideoLoading(false); $('stage').classList.add('playing'); $('cameraStatusDot').classList.add('live'); $('liveTag').className = 'live-badge live'; $('liveTag').textContent = archivePlayback ? 'ARCHIVIO' : 'LIVE';
+      setVideoLoading(false); $('stage').classList.add('playing'); $('cameraStatusDot').classList.add('live'); $('liveTag').className = 'live-badge live'; $('liveTag').textContent = archivePlayback ? 'ARCHIVIO' : liveTransport || 'LIVE';
       if (!archivePlayback) startMotionDetection();
       const camera = currentCamera(); if (camera && !healthByCamera.has(camera.id)) { healthByCamera.set(camera.id, { ok:true, latency:Math.max(1, Math.round(performance.now() - streamConnectStarted)), checkedAt:Date.now() }); updateFocusedCameraStatus(camera); }
     });

@@ -363,6 +363,7 @@ function cleanCameras(value) {
       favorite:Boolean(camera?.favorite),
       streamUrl: cleanUrl(camera?.streamUrl),
       streamLowUrl: cleanUrl(camera?.streamLowUrl),
+      webrtcUrl: cleanUrl(camera?.webrtcUrl),
       streamUsername: cleanText(camera?.streamUsername, 256),
       streamPassword: typeof camera?.streamPassword === 'string' ? camera.streamPassword.slice(0, 512) : '',
       apiBaseUrl: cleanUrl(camera?.apiBaseUrl),

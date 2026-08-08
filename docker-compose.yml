@@ -8,6 +8,8 @@ services:
     ports:
       # EasyProxy already uses host port 8888 in the existing Docker stack.
       - "8890:8888"
+      - "8891:8889"
+      - "8189:8189/udp"
     networks:
       - proxy-net
 
@@ -95,6 +97,52 @@ services:
       - -rtsp_transport
       - tcp
       - rtsp://camera-mediamtx:8554/ipc365-low
+    networks:
+      - proxy-net
+
+  # Interactive profile: no video transcoding and browser-native Opus audio.
+  # MediaMTX exposes it through WHEP/WebRTC with sub-second transport latency.
+  ipc365-bridge-webrtc:
+    image: lscr.io/linuxserver/ffmpeg:latest
+    container_name: ipc365-bridge-webrtc
+    restart: unless-stopped
+    depends_on:
+      - ipc365-bridge
+    command:
+      - -hide_banner
+      - -loglevel
+      - warning
+      - -fflags
+      - nobuffer
+      - -flags
+      - low_delay
+      - -rtsp_transport
+      - tcp
+      - -i
+      - rtsp://camera-mediamtx:8554/ipc365
+      - -map
+      - 0:v:0
+      - -map
+      - 0:a:0?
+      - -c:v
+      - copy
+      - -c:a
+      - libopus
+      - -application
+      - lowdelay
+      - -frame_duration
+      - "20"
+      - -b:a
+      - 32k
+      - -ar
+      - "48000"
+      - -ac
+      - "1"
+      - -f
+      - rtsp
+      - -rtsp_transport
+      - tcp
+      - rtsp://camera-mediamtx:8554/ipc365-webrtc
     networks:
       - proxy-net
 

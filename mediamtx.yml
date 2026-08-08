@@ -5,6 +5,14 @@ hlsAllowOrigins: ['*']
 hlsAlwaysRemux: true
 hlsVariant: lowLatency
 
+# WebRTC is the primary interactive live view. HLS remains enabled for
+# compatibility, recording and archive playback.
+webrtc: true
+webrtcAddress: :8889
+webrtcAllowOrigins: ['https://yi-web-viewer.onrender.com']
+webrtcLocalUDPAddress: :8189
+webrtcAdditionalHosts: ['nelloonrender.duckdns.org']
+
 paths:
   ipc365:
     # The FFmpeg bridge publishes the normalized IPC365 stream here.
@@ -12,6 +20,10 @@ paths:
 
   ipc365-low:
     # 480p profile generated locally for constrained mobile connections.
+    source: publisher
+
+  ipc365-webrtc:
+    # H.264 + Opus profile used by the browser through WHEP.
     source: publisher
 
   yi:

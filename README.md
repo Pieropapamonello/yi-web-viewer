@@ -7,7 +7,7 @@ Una web app multiutente senza pubblicita' per vedere e configurare telecamere HL
 - registrazione pubblica e vault separato per account;
 - vista focus e griglia, ricerca, riordino drag-and-drop e duplicazione camere;
 - posizione, note, preferiti, filtro e ordinamento sincronizzati per account;
-- configurazione guidata di video HLS e gateway PTZ;
+- configurazione guidata di video WebRTC/HLS e gateway PTZ;
 - verifica collegamenti, live a bassa latenza, audio, qualità reale 1080p/480p, fullscreen e orientamento;
 - snapshot e clip persistenti nel browser tramite IndexedDB, con data e ora fino ai secondi impresse nei fotogrammi, download ed eliminazione;
 - controlli PTZ IPC365 verificati tramite confronto automatico dei fotogrammi;
@@ -24,7 +24,8 @@ Una web app multiutente senza pubblicita' per vedere e configurare telecamere HL
 - CSP, anti-iframe, no-sniff, Referrer-Policy e Permissions-Policy su Render.
 
 ```text
-IPC365 RTSP -> FFmpeg bridge -> MediaMTX nella LAN -> HLS (.m3u8)
+IPC365 RTSP -> FFmpeg bridge -> MediaMTX nella LAN -> WebRTC/WHEP (live PTZ)
+                                                    -> HLS (.m3u8, fallback/archivio)
                                       |
                          EasyProxy opzionale (solo HLS)
                                       |
@@ -46,6 +47,8 @@ Render puo' ospitare la pagina web e, opzionalmente, EasyProxy. Non puo' collega
 4. Apri `http://localhost:8080`.
 
 Il browser legge HLS da `http://localhost:8890/ipc365/index.m3u8`. La porta 8890 evita il conflitto con EasyProxy, che nello stack esistente usa gia' la porta host 8888.
+
+Il live interattivo usa invece `http://localhost:8891/ipc365-webrtc/whep`: il profilo dedicato conserva il video H.264 senza ricodifica e converte solo l'audio in Opus. MediaMTX usa UDP 8189 per i media WebRTC. In Internet pubblica il listener HTTP 8889 dietro HTTPS e inoltra UDP 8189 al PC Docker (`192.168.1.2`); HLS viene selezionato automaticamente se WebRTC non è raggiungibile.
 
 Il servizio `ipc365-bridge-low` genera anche `http://localhost:8890/ipc365-low/index.m3u8` a 854x480. Il selettore qualità passa realmente tra questa sorgente e quella originale; non è un semplice controllo cosmetico.
 
