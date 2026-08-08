@@ -11,6 +11,7 @@ $target = Join-Path $PSScriptRoot 'onvif.env'
 
 $content = @"
 ONVIF_HOST=192.168.1.50
+TZ=Europe/Rome
 ONVIF_PORT=8080
 ONVIF_USERNAME=$($cameraCredential.UserName)
 ONVIF_PASSWORD=$plainPassword
@@ -20,6 +21,13 @@ PTZ_SPEED=0.45
 PTZ_DURATION_MS=350
 ONVIF_TIME_OFFSET_MS=0
 IPC365_PTZ_PORT=23456
+ARCHIVE_DIR=/archive
+ARCHIVE_SEGMENT_SECONDS=60
+ARCHIVE_RETENTION_DAYS=7
+DROPBOX_APP_KEY=
+DROPBOX_APP_SECRET=
+DROPBOX_REDIRECT_URI=https://control.nelloonrender.duckdns.org/api/cloud/dropbox/callback
+DASHBOARD_URL=https://yi-web-viewer.onrender.com
 "@
 
 [System.IO.File]::WriteAllText($target, $content, [System.Text.UTF8Encoding]::new($false))

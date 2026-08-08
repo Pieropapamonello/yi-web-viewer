@@ -14,6 +14,8 @@ Una web app multiutente senza pubblicita' per vedere e configurare telecamere HL
 - PTZ reattivo con comando alla pressione/swipe, tre intensità, frecce da tastiera, feedback aptico e recupero immediato del bordo live;
 - data e orologio con secondi sovrapposti al live;
 - rilevamento locale delle variazioni d'immagine e cronologia giornaliera con indicatori colorati;
+- registrazione continua Docker in MP4 da un minuto, barra oraria al secondo e playback con seek tramite URL firmati;
+- retention automatica dell'archivio e backup Dropbox manuale/automatico per account;
 - tema chiaro/scuro/sistema, modalità compatta e preferenze sincronizzate;
 - timeline account cifrata e persistente;
 - stato operativo con latenza, ultimo controllo e quota dell'archivio locale;
@@ -46,6 +48,31 @@ Render puo' ospitare la pagina web e, opzionalmente, EasyProxy. Non puo' collega
 Il browser legge HLS da `http://localhost:8890/ipc365/index.m3u8`. La porta 8890 evita il conflitto con EasyProxy, che nello stack esistente usa gia' la porta host 8888.
 
 Il servizio `ipc365-bridge-low` genera anche `http://localhost:8890/ipc365-low/index.m3u8` a 854x480. Il selettore qualità passa realmente tra questa sorgente e quella originale; non è un semplice controllo cosmetico.
+
+Il servizio `ipc365-recorder` salva segmenti MP4 da un minuto nel volume Docker `camera-archive`. Il profilo 480p contiene data e ora di Roma impresse direttamente nei fotogrammi. `archive-retention` elimina i file più vecchi di `ARCHIVE_RETENTION_DAYS` (7 per impostazione predefinita). Il gateway monta lo stesso volume e genera link di riproduzione firmati, legati all'account e validi per dieci minuti; supporta anche le richieste HTTP Range necessarie al seek.
+
+### Dropbox e MEGA
+
+Per attivare Dropbox crea un'app scoped nella Dropbox App Console, abilita `files.content.write` e registra come redirect esatto:
+
+```text
+https://control.nelloonrender.duckdns.org/api/cloud/dropbox/callback
+```
+
+Inserisci quindi nel solo `C:\mediaflow\camera\onvif.env` locale:
+
+```text
+DROPBOX_APP_KEY=app-key
+DROPBOX_APP_SECRET=app-secret
+DROPBOX_REDIRECT_URI=https://control.nelloonrender.duckdns.org/api/cloud/dropbox/callback
+DASHBOARD_URL=https://yi-web-viewer.onrender.com
+```
+
+Dopo il riavvio del gateway ogni utente può collegare il proprio Dropbox via OAuth. Access token, refresh token, impostazioni e storico upload vengono cifrati nel vault. Il backup automatico controlla ogni minuto le clip chiuse e le carica in `/FREDI Control/NOME CAMERA/`.
+
+Per MEGA la web app usa l'esportazione sicura del dispositivo: sui telefoni apre il pannello Condividi, dal quale è possibile scegliere l'app MEGA; sui desktop scarica il file MP4. Un backup MEGA completamente automatico richiede un'istanza MEGAcmd locale autenticata. Non viene usata un'immagine Docker non ufficiale.
+
+La microSD interna della camera non è equivalente al volume Docker: il firmware IPC365 usa un protocollo TF proprietario. La UI la indica correttamente come non disponibile finché una cattura PCAP di apertura timeline, selezione orario e playback nell'app ufficiale non documenta quei comandi.
 
 La IPC365 testata espone H.264 1920x1080 sul percorso:
 

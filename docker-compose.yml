@@ -56,6 +56,8 @@ services:
     restart: unless-stopped
     depends_on:
       - ipc365-bridge
+    environment:
+      TZ: Europe/Rome
     command:
       - -hide_banner
       - -loglevel
@@ -69,7 +71,7 @@ services:
       - -map
       - 0:a:0?
       - -vf
-      - scale=-2:480
+      - "scale=-2:480,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf:text=%{localtime}:fontcolor=white:fontsize=22:box=1:boxcolor=black@0.70:boxborderw=8:x=12:y=h-th-12"
       - -c:v
       - libx264
       - -preset
@@ -95,6 +97,59 @@ services:
       - rtsp://camera-mediamtx:8554/ipc365-low
     networks:
       - proxy-net
+
+  # Continuous one-minute MP4 archive used by the searchable timeline.
+  ipc365-recorder:
+    image: lscr.io/linuxserver/ffmpeg:latest
+    container_name: ipc365-recorder
+    restart: unless-stopped
+    depends_on:
+      - ipc365-bridge-low
+    environment:
+      TZ: Europe/Rome
+    command:
+      - -hide_banner
+      - -loglevel
+      - warning
+      - -rtsp_transport
+      - tcp
+      - -i
+      - rtsp://camera-mediamtx:8554/ipc365-low
+      - -map
+      - 0:v:0
+      - -map
+      - 0:a:0?
+      - -c
+      - copy
+      - -f
+      - segment
+      - -segment_format
+      - mp4
+      - -segment_time
+      - "60"
+      - -segment_atclocktime
+      - "1"
+      - -reset_timestamps
+      - "1"
+      - -strftime
+      - "1"
+      - -movflags
+      - +faststart
+      - /archive/ipc365_%Y-%m-%d_%H-%M-%S.mp4
+    volumes:
+      - camera-archive:/archive
+    networks:
+      - proxy-net
+
+  archive-retention:
+    image: alpine:3.22
+    container_name: camera-archive-retention
+    restart: unless-stopped
+    command: ["sh", "-c", "while true; do find /archive -type f -name '*.mp4' -mtime +$${ARCHIVE_RETENTION_DAYS:-7} -delete; sleep 3600; done"]
+    environment:
+      ARCHIVE_RETENTION_DAYS: ${ARCHIVE_RETENTION_DAYS:-7}
+    volumes:
+      - camera-archive:/archive
 
   web:
     image: nginx:1.29-alpine
@@ -124,3 +179,6 @@ networks:
   proxy-net:
     external: true
     name: proxy-net
+
+volumes:
+  camera-archive:

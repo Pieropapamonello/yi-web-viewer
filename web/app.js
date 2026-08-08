@@ -33,6 +33,10 @@
   let previousMotionFrame = null;
   let motionCooldownUntil = 0;
   let suppressMotionUntil = 0;
+  let archiveClips = [];
+  let selectedArchiveClip = null;
+  let archivePlayback = false;
+  let cloud = null;
   const healthByCamera = new Map();
   let streamConnectStarted = 0;
 
@@ -186,6 +190,12 @@
       $('authGate').hidden = true;
       $('appShell').hidden = false;
       setConnection('', 'Vault sincronizzato');
+      const cloudResult = new URLSearchParams(location.search).get('cloud');
+      if (cloudResult) {
+        history.replaceState({}, '', location.pathname);
+        if (cloudResult === 'dropbox-connected') toast('Dropbox collegato correttamente.', 'success');
+        else toast(cloudResult === 'dropbox-expired' ? 'Collegamento Dropbox scaduto: riprova.' : 'Collegamento Dropbox non riuscito.', 'error');
+      }
     } finally {
       setLoading(false);
     }
@@ -446,6 +456,8 @@
     applyOrientation(camera);
     loadCapabilities(camera);
     loadRecordings(camera.id);
+    loadArchive(camera.id);
+    loadCloudStatus();
     renderQualityLevels(camera);
     if (camera.streamUrl) connectStream(camera); else offline('Sorgente video non configurata.', 'Apri le impostazioni e inserisci un URL HLS HTTPS.');
   }
@@ -459,13 +471,14 @@
     stopMotionDetection();
     hls?.destroy(); hls = null;
     player.pause(); player.removeAttribute('src'); player.load();
-    $('stage').classList.remove('playing');
+    $('stage').classList.remove('playing', 'archive');
     $('cameraStatusDot').classList.remove('live');
     $('liveTag').className = 'live-badge'; $('liveTag').textContent = 'OFFLINE';
     setVideoLoading(false);
   }
 
   function connectStream(camera) {
+    archivePlayback = false;
     streamConnectStarted = performance.now();
     setVideoLoading(true);
     $('emptyTitle').textContent = 'Connessione in corso';
@@ -511,18 +524,89 @@
     if (!rail) return;
     const selected = $('timelineDate').value || localDateKey();
     const dayEvents = events.filter((item) => localDateKey(new Date(item.createdAt)) === selected);
-    rail.innerHTML = dayEvents.map((item, index) => {
+    const clipMarkup = archiveClips.map((clip, index) => {
+      const start = new Date(clip.start);
+      const seconds = start.getHours() * 3600 + start.getMinutes() * 60 + start.getSeconds();
+      const left = seconds / 86400 * 100;
+      const width = Math.max(.28, Number(clip.duration || 60) / 86400 * 100);
+      return `<button class="archive-segment" style="left:${left}%;width:${width}%" data-archive-index="${index}" title="Registrazione ${escapeHtml(start.toLocaleTimeString('it-IT'))}"></button>`;
+    }).join('');
+    const eventMarkup = dayEvents.map((item, index) => {
       const date = new Date(item.createdAt);
       const seconds = date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds();
       const left = Math.min(99.4, Math.max(.6, seconds / 86400 * 100));
       return `<button class="timeline-dot ${escapeHtml(item.type)}" style="left:${left}%" data-timeline-index="${index}" title="${escapeHtml(date.toLocaleTimeString('it-IT'))} · ${escapeHtml(item.title)}"></button>`;
     }).join('');
+    rail.innerHTML = clipMarkup + eventMarkup;
+    rail.querySelectorAll('[data-archive-index]').forEach((button) => button.addEventListener('click', (event) => {
+      event.stopPropagation(); selectArchiveClip(archiveClips[Number(button.dataset.archiveIndex)], 0);
+    }));
     rail.querySelectorAll('[data-timeline-index]').forEach((button) => button.addEventListener('click', () => {
       const item = dayEvents[Number(button.dataset.timelineIndex)];
       const date = new Date(item.createdAt);
       $('timelineSelection').innerHTML = `<b>${escapeHtml(date.toLocaleTimeString('it-IT'))} · ${escapeHtml(item.title)}</b><br>${escapeHtml(item.detail)}`;
     }));
-    if (!dayEvents.length) $('timelineSelection').textContent = 'Nessun evento registrato in questa giornata.';
+    if (!dayEvents.length && !archiveClips.length) $('timelineSelection').textContent = 'Nessuna registrazione o evento in questa giornata.';
+  }
+
+  function archiveUrl(clip) {
+    return `${gatewayBase}/api/archive/file?access=${encodeURIComponent(clip.access)}`;
+  }
+
+  async function loadArchive(cameraId = activeId) {
+    if (!cameraId || !$('timelineDate').value) return;
+    $('archiveState').textContent = 'Caricamento…';
+    try {
+      const result = await gatewayFetch(`/api/archive?cameraId=${encodeURIComponent(cameraId)}&date=${encodeURIComponent($('timelineDate').value)}`);
+      if (cameraId !== activeId) return;
+      archiveClips = result.clips || [];
+      $('archiveState').textContent = archiveClips.length ? `${archiveClips.length} clip · ${formatBytes(result.usage || 0)}` : 'Nessuna clip';
+      $('localArchiveState').textContent = `${result.retentionDays || 7} giorni · ${archiveClips.length} clip nel giorno`;
+    } catch (error) {
+      archiveClips = []; $('archiveState').textContent = 'Archivio non raggiungibile'; $('localArchiveState').textContent = error.message;
+    }
+    selectedArchiveClip = null; $('uploadDropbox').disabled = true; renderPlaybackTimeline();
+  }
+
+  function selectArchiveClip(clip, offsetSeconds = 0) {
+    if (!clip) return;
+    const camera = currentCamera(); if (!camera) return;
+    selectedArchiveClip = clip; archivePlayback = true;
+    disconnectStream(); archivePlayback = true;
+    player.src = archiveUrl(clip);
+    player.addEventListener('loadedmetadata', () => { player.currentTime = Math.min(Math.max(0, offsetSeconds), Math.max(0, player.duration - .2)); player.play().catch(() => {}); }, { once:true });
+    $('stage').classList.add('playing', 'archive'); $('qualitySelect').disabled = true; $('returnLive').hidden = false; $('uploadDropbox').disabled = !cloud?.dropbox?.connected;
+    const start = new Date(clip.start);
+    $('timelineSelection').innerHTML = `<b>Riproduzione ${escapeHtml(start.toLocaleString('it-IT'))}</b><br>${Math.round(clip.duration || 60)} secondi · ${escapeHtml(formatBytes(clip.size || 0))}`;
+  }
+
+  function returnToLive() {
+    const camera = currentCamera(); archivePlayback = false; selectedArchiveClip = null; $('stage').classList.remove('archive'); $('returnLive').hidden = true; $('uploadDropbox').disabled = true; renderQualityLevels(camera);
+    disconnectStream(); if (camera?.streamUrl) connectStream(camera);
+  }
+
+  function seekTimeline(event) {
+    if (event.target.closest('button')) return;
+    const rect = $('timelineRail').getBoundingClientRect();
+    const seconds = Math.max(0, Math.min(86399, (event.clientX - rect.left) / rect.width * 86400));
+    $('timelineScrubber').value = String(Math.round(seconds)); updateTimelineTime(seconds);
+    seekArchiveSeconds(seconds);
+  }
+
+  function updateTimelineTime(seconds = Number($('timelineScrubber').value)) {
+    const hours = Math.floor(seconds / 3600); const minutes = Math.floor(seconds % 3600 / 60); const secs = Math.floor(seconds % 60);
+    $('timelineTime').textContent = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+
+  function seekArchiveSeconds(seconds) {
+    const clip = archiveClips.find((item) => {
+      const date = new Date(item.start); const start = date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds();
+      return seconds >= start && seconds < start + Number(item.duration || 60);
+    });
+    const label = $('timelineTime').textContent;
+    if (!clip) { $('timelineSelection').innerHTML = `<b>${escapeHtml(label)}</b><br>Nessuna registrazione disponibile in questo punto.`; return; }
+    const start = new Date(clip.start); const startSeconds = start.getHours() * 3600 + start.getMinutes() * 60 + start.getSeconds();
+    selectArchiveClip(clip, seconds - startSeconds);
   }
 
   function relativeTime(date) {
@@ -854,6 +938,57 @@
     catch { toast('Impossibile salvare la clip: controlla lo spazio disponibile.', 'error'); }
   }
 
+  async function loadCloudStatus() {
+    try {
+      cloud = await gatewayFetch('/api/cloud');
+      const dropbox = cloud.dropbox || {};
+      $('cloudState').textContent = dropbox.connected ? 'Dropbox attivo' : 'Locale';
+      $('dropboxState').textContent = dropbox.connected ? `${dropbox.account || 'Account collegato'}${dropbox.lastError ? ' · errore backup' : ''}` : dropbox.configured ? 'Pronto per il collegamento' : 'App Dropbox da configurare';
+      $('dropboxConnect').textContent = dropbox.connected ? 'Scollega' : 'Collega';
+      $('dropboxAuto').disabled = !dropbox.connected; $('dropboxAuto').checked = Boolean(dropbox.autoBackup);
+      $('uploadDropbox').disabled = !(dropbox.connected && selectedArchiveClip);
+    } catch { $('cloudState').textContent = 'Non disponibile'; }
+  }
+
+  async function toggleDropboxConnection() {
+    if (cloud?.dropbox?.connected) {
+      if (!confirm('Scollegare Dropbox e fermare il backup automatico?')) return;
+      try { cloud = await gatewayFetch('/api/cloud/dropbox/disconnect', { method:'DELETE' }); await loadCloudStatus(); toast('Dropbox scollegato.', 'success'); } catch (error) { toast(error.message, 'error'); }
+      return;
+    }
+    try {
+      const result = await gatewayFetch('/api/cloud/dropbox/start', { method:'POST' });
+      location.href = result.authorizationUrl;
+    } catch (error) { toast(error.message === 'Dropbox app is not configured on the gateway' ? 'Configura DROPBOX_APP_KEY nel gateway prima di collegare Dropbox.' : error.message, 'error'); }
+  }
+
+  async function setDropboxAuto() {
+    try {
+      cloud = await gatewayFetch('/api/cloud/dropbox/settings', { method:'PUT', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ autoBackup:$('dropboxAuto').checked }) });
+      await loadCloudStatus(); toast($('dropboxAuto').checked ? 'Backup Dropbox automatico attivato.' : 'Backup automatico disattivato.', 'success');
+    } catch (error) { $('dropboxAuto').checked = !$('dropboxAuto').checked; toast(error.message, 'error'); }
+  }
+
+  async function uploadSelectedDropbox() {
+    const camera = currentCamera(); if (!camera || !selectedArchiveClip) return toast('Seleziona prima una clip nella timeline.', 'error');
+    $('uploadDropbox').disabled = true; $('uploadDropbox').textContent = 'Caricamento…';
+    try {
+      await gatewayFetch('/api/cloud/dropbox/upload', { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ cameraId:camera.id, name:selectedArchiveClip.name }) });
+      toast('Clip salvata su Dropbox.', 'success'); await loadCloudStatus();
+    } catch (error) { toast(error.message, 'error'); }
+    finally { $('uploadDropbox').textContent = 'Salva clip selezionata su Dropbox'; $('uploadDropbox').disabled = !(cloud?.dropbox?.connected && selectedArchiveClip); }
+  }
+
+  async function exportSelectedClip() {
+    if (!selectedArchiveClip) return toast('Seleziona prima una clip nella timeline.', 'error');
+    try {
+      const response = await fetch(archiveUrl(selectedArchiveClip)); if (!response.ok) throw new Error('Clip non raggiungibile');
+      const blob = await response.blob(); const file = new File([blob], selectedArchiveClip.name, { type:'video/mp4' });
+      if (navigator.canShare?.({ files:[file] })) await navigator.share({ title:'Registrazione FREDI Control', files:[file] });
+      else { const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000); }
+    } catch (error) { if (error.name !== 'AbortError') toast(error.message, 'error'); }
+  }
+
   function applyPreferences() {
     let theme = preferences.theme;
     if (theme === 'system') theme = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
@@ -940,18 +1075,36 @@
       const camera = currentCamera();
       if (camera?.streamUrl) { disconnectStream(); connectStream(camera); }
     });
-    $('timelineDate').addEventListener('change', renderPlaybackTimeline);
+    $('timelineDate').addEventListener('change', () => loadArchive(activeId));
+    $('timelineRail').addEventListener('click', seekTimeline);
+    $('timelineScrubber').addEventListener('input', () => updateTimelineTime());
+    $('timelineScrubber').addEventListener('change', () => seekArchiveSeconds(Number($('timelineScrubber').value)));
+    $('returnLive').addEventListener('click', returnToLive);
+    $('cloudSource').addEventListener('click', () => document.querySelector('.cloud-panel').scrollIntoView({ behavior:'smooth', block:'center' }));
+    $('dropboxConnect').addEventListener('click', toggleDropboxConnection);
+    $('dropboxAuto').addEventListener('change', setDropboxAuto);
+    $('uploadDropbox').addEventListener('click', uploadSelectedDropbox);
+    $('exportClip').addEventListener('click', exportSelectedClip);
     $('stage').addEventListener('pointerdown', beginGesture);
     $('stage').addEventListener('pointermove', moveGesture);
     $('stage').addEventListener('pointerup', finishGesture);
     $('stage').addEventListener('pointercancel', () => { gestureStart = null; $('gestureHint').hidden = true; });
     $('recordingList').addEventListener('click', (event) => { const button = event.target.closest('[data-delete-recording]'); if (button) deleteRecording(button.dataset.deleteRecording); });
     player.addEventListener('playing', () => {
-      setVideoLoading(false); $('stage').classList.add('playing'); $('cameraStatusDot').classList.add('live'); $('liveTag').className = 'live-badge live'; $('liveTag').textContent = 'LIVE';
-      startMotionDetection();
+      setVideoLoading(false); $('stage').classList.add('playing'); $('cameraStatusDot').classList.add('live'); $('liveTag').className = 'live-badge live'; $('liveTag').textContent = archivePlayback ? 'ARCHIVIO' : 'LIVE';
+      if (!archivePlayback) startMotionDetection();
       const camera = currentCamera(); if (camera && !healthByCamera.has(camera.id)) { healthByCamera.set(camera.id, { ok:true, latency:Math.max(1, Math.round(performance.now() - streamConnectStarted)), checkedAt:Date.now() }); updateFocusedCameraStatus(camera); }
     });
-    player.addEventListener('error', () => { const camera = currentCamera(); if (camera) { healthByCamera.set(camera.id, { ok:false, latency:0, checkedAt:Date.now() }); updateFocusedCameraStatus(camera); } setVideoLoading(false); offline('Errore di riproduzione.', 'Controlla il codec e il gateway HLS.'); });
+    player.addEventListener('error', () => {
+      if (archivePlayback) { setVideoLoading(false); offline('Clip non riproducibile.', 'Il link potrebbe essere scaduto: ricarica la timeline.'); return; }
+      const camera = currentCamera(); if (camera) { healthByCamera.set(camera.id, { ok:false, latency:0, checkedAt:Date.now() }); updateFocusedCameraStatus(camera); }
+      setVideoLoading(false); offline('Errore di riproduzione.', 'Controlla il codec e il gateway HLS.');
+    });
+    player.addEventListener('timeupdate', () => {
+      if (!archivePlayback || !selectedArchiveClip) return;
+      const start = new Date(selectedArchiveClip.start); const seconds = start.getHours() * 3600 + start.getMinutes() * 60 + start.getSeconds() + player.currentTime;
+      $('timelineScrubber').value = String(Math.min(86399, Math.round(seconds))); updateTimelineTime(seconds);
+    });
     $('viewFocus').addEventListener('click', () => setView('focus')); $('viewGrid').addEventListener('click', () => setView('grid'));
     $('globalSearch').addEventListener('input', (event) => { searchText = event.target.value.trim().toLowerCase(); renderStats(); renderSwitcher(); renderGrid(); });
     $('clearEvents').addEventListener('click', clearEvents);
@@ -974,7 +1127,7 @@
 
   async function bootstrap() {
     bindEvents(); setAuthMode('login'); $('loginUsername').value = localStorage.getItem(LAST_USER_KEY) || '';
-    $('timelineDate').value = localDateKey(); updateLiveClock(); setInterval(updateLiveClock, 1000);
+    $('timelineDate').value = localDateKey(); const now = new Date(); $('timelineScrubber').value = String(now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds()); updateTimelineTime(); updateLiveClock(); setInterval(updateLiveClock, 1000);
     if (auth?.token) {
       try { await enterDashboard(); return; } catch { logout(false); }
     }

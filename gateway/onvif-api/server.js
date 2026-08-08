@@ -27,6 +27,12 @@ const VAULT_KEY = process.env.VAULT_KEY || '';
 const ACCOUNTS_FILE = process.env.ACCOUNTS_FILE || '/data/accounts.json';
 const SESSION_DAYS = Math.min(90, Math.max(1, Number(process.env.SESSION_DAYS || 30)));
 const MAX_USERS = Math.min(10000, Math.max(1, Number(process.env.MAX_USERS || 500)));
+const ARCHIVE_DIR = process.env.ARCHIVE_DIR || '/archive';
+const ARCHIVE_SEGMENT_SECONDS = Math.min(3600, Math.max(10, Number(process.env.ARCHIVE_SEGMENT_SECONDS || 60)));
+const DROPBOX_APP_KEY = process.env.DROPBOX_APP_KEY || '';
+const DROPBOX_APP_SECRET = process.env.DROPBOX_APP_SECRET || '';
+const DROPBOX_REDIRECT_URI = process.env.DROPBOX_REDIRECT_URI || 'https://control.nelloonrender.duckdns.org/api/cloud/dropbox/callback';
+const DASHBOARD_URL = process.env.DASHBOARD_URL || ALLOWED_ORIGIN;
 const AUTH_READY = Boolean(
   AUTH_SECRET.length >= 32 &&
   /^[a-f0-9]{64}$/i.test(VAULT_KEY)
@@ -42,6 +48,7 @@ if (!AUTH_READY) {
 }
 
 let cameraPromise;
+const pendingDropbox = new Map();
 
 function connectCamera() {
   if (!cameraPromise) {
@@ -187,11 +194,8 @@ function signSession(payload) {
   return `${encoded}.${signature}`;
 }
 
-function sessionFromRequest(request) {
+function verifySignedToken(token) {
   if (!AUTH_READY) return null;
-  const authorization = request.headers.authorization || '';
-  if (!authorization.startsWith('Bearer ')) return null;
-  const token = authorization.slice(7);
   const parts = token.split('.');
   if (parts.length !== 2) return null;
   const expected = crypto.createHmac('sha256', AUTH_SECRET).update(parts[0]).digest();
@@ -209,6 +213,11 @@ function sessionFromRequest(request) {
   } catch {
     return null;
   }
+}
+
+function sessionFromRequest(request) {
+  const authorization = request.headers.authorization || '';
+  return authorization.startsWith('Bearer ') ? verifySignedToken(authorization.slice(7)) : null;
 }
 
 function passwordHash(password, salt, iterations = DASHBOARD_PASSWORD_ITERATIONS) {
@@ -247,7 +256,7 @@ function saveAccounts(data) {
 }
 
 function decryptVault(account) {
-  if (!account.vault) return { version: 1, cameras: [], events: [], preferences: {} };
+  if (!account.vault) return { version: 1, cameras: [], events: [], preferences: {}, cloud:{} };
   const envelope = account.vault;
   const decipher = crypto.createDecipheriv('aes-256-gcm', vaultKey(), Buffer.from(envelope.iv, 'base64'));
   decipher.setAAD(Buffer.from(`fredi-camera-vault-v2:${account.id}`));
@@ -262,6 +271,7 @@ function decryptVault(account) {
     cameras: Array.isArray(vault.cameras) ? vault.cameras : [],
     events: Array.isArray(vault.events) ? vault.events.slice(0, 100) : [],
     preferences: vault.preferences && typeof vault.preferences === 'object' ? vault.preferences : {},
+    cloud: vault.cloud && typeof vault.cloud === 'object' ? vault.cloud : {},
   };
 }
 
@@ -279,6 +289,10 @@ function encryptVault(accountId, vault) {
     tag: cipher.getAuthTag().toString('base64'),
     ciphertext: ciphertext.toString('base64'),
   };
+}
+
+function publicVault(vault) {
+  return { version:1, cameras:vault.cameras || [], events:vault.events || [], preferences:vault.preferences || {} };
 }
 
 function publicAccount(account) {
@@ -356,8 +370,137 @@ function cleanCameras(value) {
       ptz: camera?.ptz !== false,
       rotation: camera?.rotation === 180 ? 180 : 0,
       motionDetection: camera?.motionDetection !== false,
+      archiveKey: cleanText(camera?.archiveKey, 64).replace(/[^a-zA-Z0-9_-]/g, ''),
     };
   });
+}
+
+function cameraArchiveKey(camera) {
+  if (camera?.archiveKey) return camera.archiveKey;
+  try {
+    const segment = new URL(camera?.streamLowUrl || camera?.streamUrl).pathname.split('/').filter(Boolean)[0] || '';
+    return segment.replace(/-low$/, '').replace(/[^a-zA-Z0-9_-]/g, '');
+  } catch { return ''; }
+}
+
+function cameraArchiveAuthorized(camera) {
+  const supplied = Buffer.from(typeof camera?.apiToken === 'string' ? camera.apiToken : '');
+  const expected = Buffer.from(API_TOKEN);
+  return supplied.length === expected.length && supplied.length > 0 && crypto.timingSafeEqual(supplied, expected);
+}
+
+function archiveEntries(camera, date) {
+  const key = cameraArchiveKey(camera);
+  if (!key || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !fs.existsSync(ARCHIVE_DIR)) return [];
+  const expression = new RegExp(`^${key}_${date}_(\\d{2})-(\\d{2})-(\\d{2})\\.mp4$`);
+  return fs.readdirSync(ARCHIVE_DIR).flatMap((name) => {
+    const match = expression.exec(name);
+    if (!match) return [];
+    const filePath = path.join(ARCHIVE_DIR, name);
+    const stat = fs.statSync(filePath);
+    // FFmpeg writes the MP4 index only when a segment closes. Hide the file
+    // that is still growing so browsers never receive an incomplete movie.
+    if (!stat.isFile() || stat.size < 1024 || Date.now() - stat.mtimeMs < 5000) return [];
+    const start = new Date(`${date}T${match[1]}:${match[2]}:${match[3]}`);
+    return [{ name, start:start.toISOString(), duration:ARCHIVE_SEGMENT_SECONDS, size:stat.size }];
+  }).sort((left, right) => left.start.localeCompare(right.start));
+}
+
+function archiveFileForAccount(account, cameraId, name) {
+  const vault = decryptVault(account);
+  const camera = vault.cameras.find((item) => item.id === cameraId);
+  const key = cameraArchiveKey(camera);
+  if (!camera || !cameraArchiveAuthorized(camera) || !key || path.basename(name) !== name || !name.startsWith(`${key}_`) || !name.endsWith('.mp4')) return null;
+  const filePath = path.join(ARCHIVE_DIR, name);
+  return fs.existsSync(filePath) && fs.statSync(filePath).isFile() ? filePath : null;
+}
+
+function sendArchiveFile(request, response, filePath, headers) {
+  const stat = fs.statSync(filePath);
+  const range = request.headers.range;
+  const common = { ...headers, 'Content-Type':'video/mp4', 'Accept-Ranges':'bytes', 'Cache-Control':'private, no-store' };
+  if (!range) {
+    response.writeHead(200, { ...common, 'Content-Length':stat.size });
+    return fs.createReadStream(filePath).pipe(response);
+  }
+  const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+  if (!match) { response.writeHead(416, { ...common, 'Content-Range':`bytes */${stat.size}` }); return response.end(); }
+  const start = match[1] ? Number(match[1]) : 0;
+  const end = match[2] ? Math.min(Number(match[2]), stat.size - 1) : stat.size - 1;
+  if (start > end || start >= stat.size) { response.writeHead(416, { ...common, 'Content-Range':`bytes */${stat.size}` }); return response.end(); }
+  response.writeHead(206, { ...common, 'Content-Length':end - start + 1, 'Content-Range':`bytes ${start}-${end}/${stat.size}` });
+  return fs.createReadStream(filePath, { start, end }).pipe(response);
+}
+
+function cloudStatus(vault) {
+  const dropbox = vault.cloud?.dropbox || {};
+  return {
+    dropbox:{ configured:Boolean(DROPBOX_APP_KEY), connected:Boolean(dropbox.refreshToken || dropbox.accessToken), autoBackup:Boolean(dropbox.autoBackup), account:dropbox.account || '', lastUpload:dropbox.lastUpload || '', lastError:dropbox.lastError || '' },
+    mega:{ configured:false, connected:false, detail:'Richiede il servizio MEGAcmd locale.' },
+  };
+}
+
+async function dropboxToken(parameters) {
+  const body = new URLSearchParams(parameters);
+  if (DROPBOX_APP_SECRET) body.set('client_secret', DROPBOX_APP_SECRET);
+  const response = await fetch('https://api.dropboxapi.com/oauth2/token', { method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded' }, body });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error_description || result.error || `Dropbox OAuth ${response.status}`);
+  return result;
+}
+
+async function validDropboxAccess(dropbox) {
+  if (dropbox.accessToken && Number(dropbox.expiresAt || 0) > Date.now() + 60_000) return dropbox.accessToken;
+  if (!dropbox.refreshToken) throw new Error('Dropbox authorization expired');
+  const result = await dropboxToken({ grant_type:'refresh_token', refresh_token:dropbox.refreshToken, client_id:DROPBOX_APP_KEY });
+  dropbox.accessToken = result.access_token;
+  dropbox.expiresAt = Date.now() + Number(result.expires_in || 14400) * 1000;
+  return dropbox.accessToken;
+}
+
+async function uploadToDropbox(vault, camera, filePath) {
+  const dropbox = vault.cloud?.dropbox;
+  if (!dropbox) throw new Error('Dropbox is not connected');
+  const accessToken = await validDropboxAccess(dropbox);
+  const remoteName = `/FREDI Control/${String(camera.name || 'Camera').replace(/[\\/:?*<>|]/g, '-')}/${path.basename(filePath)}`;
+  const content = fs.readFileSync(filePath);
+  const response = await fetch('https://content.dropboxapi.com/2/files/upload', {
+    method:'POST',
+    headers:{ Authorization:`Bearer ${accessToken}`, 'Content-Type':'application/octet-stream', 'Dropbox-API-Arg':JSON.stringify({ path:remoteName, mode:'overwrite', autorename:false, mute:true }) },
+    body:content,
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error_summary || `Dropbox upload ${response.status}`);
+  dropbox.lastUpload = new Date().toISOString(); dropbox.lastError = '';
+  return result;
+}
+
+let cloudBackupRunning = false;
+async function runCloudBackups() {
+  if (cloudBackupRunning || !DROPBOX_APP_KEY || !AUTH_READY || !fs.existsSync(ARCHIVE_DIR)) return;
+  cloudBackupRunning = true;
+  try {
+    const data = loadAccounts(); let changed = false;
+    for (const account of data.users) {
+      const vault = decryptVault(account); const dropbox = vault.cloud?.dropbox;
+      if (!dropbox?.autoBackup || (!dropbox.refreshToken && !dropbox.accessToken)) continue;
+      const uploaded = new Set(dropbox.uploaded || []);
+      for (const camera of vault.cameras) {
+        if (!cameraArchiveAuthorized(camera)) continue;
+        const key = cameraArchiveKey(camera); if (!key) continue;
+        const candidate = fs.readdirSync(ARCHIVE_DIR).filter((name) => name.startsWith(`${key}_`) && name.endsWith('.mp4') && !uploaded.has(name)).sort().at(0);
+        if (!candidate) continue;
+        const filePath = path.join(ARCHIVE_DIR, candidate);
+        if (Date.now() - fs.statSync(filePath).mtimeMs < 15_000) continue;
+        try {
+          await uploadToDropbox(vault, camera, filePath); uploaded.add(candidate);
+          dropbox.uploaded = [...uploaded].slice(-1000); changed = true;
+        } catch (error) { dropbox.lastError = error.message; changed = true; }
+      }
+      if (changed) account.vault = encryptVault(account.id, vault);
+    }
+    if (changed) saveAccounts(data);
+  } finally { cloudBackupRunning = false; }
 }
 
 const loginAttempts = new Map();
@@ -387,7 +530,8 @@ function corsHeaders(origin) {
   return {
     'Access-Control-Allow-Origin': allowed,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type, Range',
+    'Access-Control-Expose-Headers': 'Accept-Ranges, Content-Length, Content-Range',
     'Vary': 'Origin',
     'Cache-Control': 'no-store',
   };
@@ -417,7 +561,8 @@ async function readJson(request) {
 
 const server = http.createServer(async (request, response) => {
   const headers = corsHeaders(request.headers.origin);
-  const pathname = new URL(request.url, 'http://gateway.local').pathname;
+  const requestUrl = new URL(request.url, 'http://gateway.local');
+  const pathname = requestUrl.pathname;
   if (request.method === 'OPTIONS') {
     response.writeHead(204, headers);
     return response.end();
@@ -462,6 +607,7 @@ const server = http.createServer(async (request, response) => {
         cameras:[],
         events:[vaultEvent('success', 'Account creato', 'Il vault personale è pronto.')],
         preferences:cleanPreferences({}),
+        cloud:{},
       });
       data.users.push(account);
       saveAccounts(data);
@@ -505,12 +651,130 @@ const server = http.createServer(async (request, response) => {
     }
   }
 
+  if (pathname === '/api/cloud/dropbox/callback' && request.method === 'GET') {
+    const state = cleanText(requestUrl.searchParams.get('state'), 200);
+    const pending = pendingDropbox.get(state); pendingDropbox.delete(state);
+    if (!pending || pending.expiresAt < Date.now()) { response.writeHead(302, { Location:`${DASHBOARD_URL}/?cloud=dropbox-expired` }); return response.end(); }
+    try {
+      const code = cleanText(requestUrl.searchParams.get('code'), 2048);
+      const token = await dropboxToken({ code, grant_type:'authorization_code', client_id:DROPBOX_APP_KEY, redirect_uri:DROPBOX_REDIRECT_URI, code_verifier:pending.verifier });
+      const profileResponse = await fetch('https://api.dropboxapi.com/2/users/get_current_account', { method:'POST', headers:{ Authorization:`Bearer ${token.access_token}`, 'Content-Type':'application/json' }, body:'null' });
+      const profile = await profileResponse.json().catch(() => ({}));
+      const data = loadAccounts();
+      const account = data.users.find((item) => item.id === pending.accountId);
+      if (!account) throw new Error('Account no longer exists');
+      const vault = decryptVault(account); vault.cloud ||= {};
+      vault.cloud.dropbox = { accessToken:token.access_token, refreshToken:token.refresh_token || '', expiresAt:Date.now() + Number(token.expires_in || 14400) * 1000, account:profile.email || profile.name?.display_name || token.account_id || 'Dropbox', autoBackup:false, uploaded:[] };
+      vault.events.unshift(vaultEvent('success', 'Dropbox collegato', 'Il cloud è pronto per il backup delle registrazioni.'));
+      account.vault = encryptVault(account.id, vault); saveAccounts(data);
+      response.writeHead(302, { Location:`${DASHBOARD_URL}/?cloud=dropbox-connected` }); return response.end();
+    } catch (error) {
+      console.error(`Dropbox callback: ${error.message}`);
+      response.writeHead(302, { Location:`${DASHBOARD_URL}/?cloud=dropbox-error` }); return response.end();
+    }
+  }
+
   const session = sessionFromRequest(request);
+  if (pathname === '/api/archive/file' && request.method === 'GET') {
+    const access = verifySignedToken(requestUrl.searchParams.get('access') || '');
+    if (!access || access.kind !== 'archive') return send(response, 401, { error:'Archive link expired' }, headers);
+    const data = loadAccounts();
+    const account = accountFromSession(access, data);
+    const filePath = account ? archiveFileForAccount(account, access.cameraId, access.name) : null;
+    if (!filePath) return send(response, 404, { error:'Archive clip not found' }, headers);
+    return sendArchiveFile(request, response, filePath, headers);
+  }
+
   if (pathname === '/api/auth/session' && request.method === 'GET') {
     if (!session) return send(response, 401, { error: 'Unauthorized' }, headers);
     const account = accountFromSession(session, loadAccounts());
     if (!account) return send(response, 401, { error: 'Unauthorized' }, headers);
     return send(response, 200, { ok:true, account:publicAccount(account), expiresAt:session.exp }, headers);
+  }
+
+  if (pathname === '/api/archive' && request.method === 'GET') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    try {
+      const data = loadAccounts();
+      const account = accountFromSession(session, data);
+      if (!account) return send(response, 401, { error:'Unauthorized' }, headers);
+      const vault = decryptVault(account);
+      const cameraId = cleanText(requestUrl.searchParams.get('cameraId'), 80);
+      const date = cleanText(requestUrl.searchParams.get('date'), 10);
+      const camera = vault.cameras.find((item) => item.id === cameraId);
+      if (!camera) return send(response, 404, { error:'Camera not found' }, headers);
+      if (!cameraArchiveAuthorized(camera)) return send(response, 403, { error:'Archive access is not configured for this camera' }, headers);
+      const clips = archiveEntries(camera, date).map((clip) => ({
+        ...clip,
+        access:signSession({ kind:'archive', sub:account.id, ver:account.sessionVersion || '1', exp:Date.now() + 10 * 60 * 1000, cameraId, name:clip.name }),
+      }));
+      const usage = clips.reduce((sum, clip) => sum + clip.size, 0);
+      return send(response, 200, { ok:true, date, cameraId, clips, usage, retentionDays:Number(process.env.ARCHIVE_RETENTION_DAYS || 7), sdCardSupported:false }, headers);
+    } catch (error) {
+      console.error(`Archive: ${error.message}`);
+      return send(response, 500, { error:'Archive temporarily unavailable' }, headers);
+    }
+  }
+
+  if (pathname === '/api/cloud' && request.method === 'GET') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    const account = accountFromSession(session, loadAccounts());
+    if (!account) return send(response, 401, { error:'Unauthorized' }, headers);
+    return send(response, 200, { ok:true, ...cloudStatus(decryptVault(account)) }, headers);
+  }
+
+  if (pathname === '/api/cloud/dropbox/start' && request.method === 'POST') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    const account = accountFromSession(session, loadAccounts());
+    if (!account) return send(response, 401, { error:'Unauthorized' }, headers);
+    if (!DROPBOX_APP_KEY) return send(response, 503, { error:'Dropbox app is not configured on the gateway' }, headers);
+    const verifier = crypto.randomBytes(48).toString('base64url');
+    const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+    const state = crypto.randomBytes(24).toString('base64url');
+    pendingDropbox.set(state, { accountId:account.id, verifier, expiresAt:Date.now() + 10 * 60 * 1000 });
+    const authorize = new URL('https://www.dropbox.com/oauth2/authorize');
+    authorize.search = new URLSearchParams({ client_id:DROPBOX_APP_KEY, response_type:'code', redirect_uri:DROPBOX_REDIRECT_URI, token_access_type:'offline', code_challenge_method:'S256', code_challenge:challenge, state }).toString();
+    return send(response, 200, { ok:true, authorizationUrl:authorize.toString() }, headers);
+  }
+
+  if (pathname === '/api/cloud/dropbox/settings' && request.method === 'PUT') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    try {
+      const body = await readJson(request); const data = loadAccounts(); const account = accountFromSession(session, data);
+      if (!account) return send(response, 401, { error:'Unauthorized' }, headers);
+      const vault = decryptVault(account); if (!vault.cloud?.dropbox) return send(response, 409, { error:'Dropbox is not connected' }, headers);
+      vault.cloud.dropbox.autoBackup = Boolean(body.autoBackup);
+      account.vault = encryptVault(account.id, vault); saveAccounts(data);
+      return send(response, 200, { ok:true, ...cloudStatus(vault) }, headers);
+    } catch (error) { return send(response, 400, { error:error.message }, headers); }
+  }
+
+  if (pathname === '/api/cloud/dropbox/disconnect' && request.method === 'DELETE') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    const data = loadAccounts(); const account = accountFromSession(session, data);
+    if (!account) return send(response, 401, { error:'Unauthorized' }, headers);
+    const vault = decryptVault(account); if (vault.cloud) delete vault.cloud.dropbox;
+    account.vault = encryptVault(account.id, vault); saveAccounts(data);
+    return send(response, 200, { ok:true, ...cloudStatus(vault) }, headers);
+  }
+
+  if (pathname === '/api/cloud/dropbox/upload' && request.method === 'POST') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    try {
+      const body = await readJson(request); const data = loadAccounts(); const account = accountFromSession(session, data);
+      if (!account) return send(response, 401, { error:'Unauthorized' }, headers);
+      const vault = decryptVault(account); const camera = vault.cameras.find((item) => item.id === cleanText(body.cameraId, 80));
+      const filePath = camera ? archiveFileForAccount(account, camera.id, cleanText(body.name, 200)) : null;
+      if (!camera || !filePath) return send(response, 404, { error:'Archive clip not found' }, headers);
+      const result = await uploadToDropbox(vault, camera, filePath);
+      vault.cloud.dropbox.uploaded = [...new Set([...(vault.cloud.dropbox.uploaded || []), path.basename(filePath)])].slice(-1000);
+      vault.events.unshift(vaultEvent('success', 'Clip salvata su Dropbox', `${camera.name}: ${path.basename(filePath)}`));
+      account.vault = encryptVault(account.id, vault); saveAccounts(data);
+      return send(response, 201, { ok:true, name:result.name, path:result.path_display, cloud:cloudStatus(vault) }, headers);
+    } catch (error) {
+      console.error(`Dropbox upload: ${error.message}`);
+      return send(response, 502, { error:'Dropbox upload failed', detail:error.message }, headers);
+    }
   }
 
   if (pathname === '/api/cameras') {
@@ -520,7 +784,7 @@ const server = http.createServer(async (request, response) => {
       const account = accountFromSession(session, data);
       if (!account) return send(response, 401, { error: 'Unauthorized' }, headers);
       if (request.method === 'GET') {
-        return send(response, 200, decryptVault(account), headers);
+        return send(response, 200, publicVault(decryptVault(account)), headers);
       }
       if (request.method === 'PUT') {
         const body = await readJson(request);
@@ -530,7 +794,7 @@ const server = http.createServer(async (request, response) => {
         vault.events = vault.events.slice(0, 100);
         account.vault = encryptVault(account.id, vault);
         saveAccounts(data);
-        return send(response, 200, vault, headers);
+        return send(response, 200, publicVault(vault), headers);
       }
       return send(response, 405, { error: 'Method not allowed' }, headers);
     } catch (error) {
@@ -677,3 +941,5 @@ const server = http.createServer(async (request, response) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Camera gateway listening on port ${PORT}; ONVIF ${HOST}:${ONVIF_PORT}; IPC365 PTZ ${HOST}:${IPC365_PTZ_PORT}`);
 });
+
+setInterval(() => runCloudBackups().catch((error) => console.error(`Cloud backup: ${error.message}`)), 60_000).unref();
