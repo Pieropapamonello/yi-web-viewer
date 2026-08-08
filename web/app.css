@@ -164,5 +164,12 @@ body.compact .workspace { padding-top:22px; }.compact .stats-grid { margin:16px 
 .camera-chip-wrap.favorite .camera-chip b::after { content:'★'; margin-left:6px; color:var(--amber); }.grid-card.favorite { box-shadow:inset 0 3px 0 rgba(245,184,75,.7); }.grid-location { display:flex; align-items:center; gap:4px; margin:6px 0 10px!important; }.grid-location svg { width:11px; color:var(--primary); }
 .recording button[data-delete-recording] { width:25px; height:25px; border:1px solid var(--line); border-radius:7px; background:transparent; color:var(--faint); }
 .filter-empty { display:grid; place-items:center; min-height:52px; padding:10px 16px; border:1px dashed var(--line); border-radius:10px; color:var(--faint); font-size:9px; }.grid-filter-empty { grid-column:1/-1; min-height:150px; }
+.ai-panel>p { margin:0 0 12px; color:var(--muted); font-size:9px; line-height:1.55; }
+.ai-panel .button { width:100%; justify-content:center; }
+.ai-panel .button svg { width:14px; height:14px; }
+.ai-result { min-height:70px; margin-top:11px; border:1px solid var(--line-soft); border-radius:10px; padding:10px; color:var(--text); background:linear-gradient(135deg,color-mix(in srgb,var(--surface-2) 90%,var(--violet) 5%),var(--surface-2)); font-size:9px; line-height:1.6; white-space:pre-wrap; }
+.ai-result span,.ai-privacy { color:var(--faint); }
+.ai-result.loading { color:var(--primary); }
+.ai-privacy { display:block; margin-top:8px; font-size:8px; line-height:1.4; }
 @media (max-width:900px) { .operations-bar { align-items:flex-start; }.operation-metrics>span { min-width:95px; padding:0 10px; }.section-tools { flex-wrap:wrap; justify-content:flex-end; } }
 @media (max-width:650px) { .operations-bar { display:block; margin-top:-12px; }.operation-metrics { display:grid; grid-template-columns:repeat(3,1fr); margin-top:13px; padding-top:12px; border-top:1px solid var(--line-soft); }.operation-metrics>span { min-width:0; padding:0 8px; border-left:0; }.operation-metrics>span+span { border-left:1px solid var(--line-soft); }.section-tools>.favorite-filter { display:flex; min-width:35px; padding:8px; }.favorite-filter span,.sort-control span { display:none; }.sort-control { min-height:35px; }.viewer-actions .health-badge { display:none; } }

@@ -42,6 +42,7 @@
   let selectedArchiveClip = null;
   let archivePlayback = false;
   let cloud = null;
+  let aiReady = false;
   const healthByCamera = new Map();
   let streamConnectStarted = 0;
 
@@ -302,6 +303,60 @@
     } catch { $('capabilityState').textContent = 'Non verificato'; }
   }
 
+  async function loadAiStatus() {
+    aiReady = false;
+    $('aiAnalyze').disabled = true;
+    $('aiState').textContent = 'Verifica…';
+    try {
+      const result = await gatewayFetch('/api/ai/status');
+      aiReady = Boolean(result.configured);
+      $('aiState').textContent = aiReady ? 'Pronta' : 'Non configurata';
+      $('aiAnalyze').disabled = !aiReady;
+      if (!aiReady) $('aiResult').innerHTML = '<span>Aggiungi una nuova chiave IA nelle variabili protette del gateway.</span>';
+    } catch {
+      $('aiState').textContent = 'Non disponibile';
+    }
+  }
+
+  async function analyzeCurrentFrame() {
+    const camera = currentCamera();
+    if (!aiReady) return toast('Smart Vision non è configurata sul gateway.', 'error');
+    if (!camera || player.readyState < 2 || !player.videoWidth) return toast('Avvia il live prima dell’analisi.', 'error');
+    const button = $('aiAnalyze');
+    button.disabled = true;
+    $('aiState').textContent = 'Analisi…';
+    $('aiResult').classList.add('loading');
+    $('aiResult').textContent = 'Il modello sta osservando il fotogramma corrente…';
+    try {
+      const maximumWidth = 960;
+      const scale = Math.min(1, maximumWidth / player.videoWidth);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(player.videoWidth * scale));
+      canvas.height = Math.max(1, Math.round(player.videoHeight * scale));
+      const context = canvas.getContext('2d');
+      if (camera.rotation === 180) {
+        context.translate(canvas.width, canvas.height);
+        context.rotate(Math.PI);
+      }
+      context.drawImage(player, 0, 0, canvas.width, canvas.height);
+      const image = canvas.toDataURL('image/jpeg', .72);
+      const result = await gatewayFetch('/api/ai/analyze', {
+        method:'POST', headers:{ 'Content-Type':'application/json' },
+        body:JSON.stringify({ cameraId:camera.id, image }),
+      });
+      $('aiResult').textContent = `${result.analysis}\n\nAnalizzato: ${new Date(result.analyzedAt).toLocaleString('it-IT')}`;
+      $('aiState').textContent = 'Completata';
+      recordActivity('ai', 'Analisi Smart Vision', `${camera.name}: fotogramma analizzato senza archiviare l’immagine.`);
+    } catch (error) {
+      $('aiState').textContent = 'Errore';
+      $('aiResult').textContent = error.message === 'Smart Vision analysis failed' ? 'Il provider IA non ha completato l’analisi. Verifica chiave, credito e modello.' : error.message;
+      toast('Analisi IA non riuscita.', 'error');
+    } finally {
+      $('aiResult').classList.remove('loading');
+      button.disabled = !aiReady;
+    }
+  }
+
   function derivedLowStreamUrl(camera) {
     if (camera?.streamLowUrl) return camera.streamLowUrl;
     return String(camera?.streamUrl || '').replace('/ipc365/', '/ipc365-low/');
@@ -463,6 +518,7 @@
     loadRecordings(camera.id);
     loadArchive(camera.id);
     loadCloudStatus();
+    loadAiStatus();
     renderQualityLevels(camera);
     if (camera.streamUrl) connectStream(camera); else offline('Sorgente video non configurata.', 'Apri le impostazioni e inserisci un URL HLS HTTPS.');
   }
@@ -1171,6 +1227,7 @@
     document.querySelectorAll('[data-ptz]').forEach((button) => button.addEventListener('pointerdown', (event) => { event.preventDefault(); sendPtz(button.dataset.ptz); }));
     document.querySelectorAll('[data-ptz-step]').forEach((button) => button.addEventListener('click', () => { ptzStep = Number(button.dataset.ptzStep); document.querySelectorAll('[data-ptz-step]').forEach((item) => item.classList.toggle('active', item === button)); }));
     $('snapshotButton').addEventListener('click', snapshot); $('recordButton').addEventListener('click', toggleRecording);
+    $('aiAnalyze').addEventListener('click', analyzeCurrentFrame);
     $('muteButton').addEventListener('click', () => { player.muted = !player.muted; $('muteButton').classList.toggle('unmuted', !player.muted); });
     $('fullButton').addEventListener('click', () => $('stage').requestFullscreen?.());
     $('rotateButton').addEventListener('click', toggleOrientation); $('orientationFeature').addEventListener('click', toggleOrientation);

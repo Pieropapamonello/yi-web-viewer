@@ -33,6 +33,10 @@ const DROPBOX_APP_KEY = process.env.DROPBOX_APP_KEY || '';
 const DROPBOX_APP_SECRET = process.env.DROPBOX_APP_SECRET || '';
 const DROPBOX_REDIRECT_URI = process.env.DROPBOX_REDIRECT_URI || 'https://control.nelloonrender.duckdns.org/api/cloud/dropbox/callback';
 const DASHBOARD_URL = process.env.DASHBOARD_URL || ALLOWED_ORIGIN;
+const AI_API_KEY = process.env.AI_API_KEY || process.env.GROQ_API_KEY || '';
+const AI_API_BASE_URL = String(process.env.AI_API_BASE_URL || 'https://api.groq.com/openai/v1').replace(/\/$/, '');
+const AI_MODEL = process.env.AI_MODEL || 'qwen/qwen3.6-27b';
+const AI_TIMEOUT_MS = Math.min(120000, Math.max(5000, Number(process.env.AI_TIMEOUT_MS || 45000)));
 const AUTH_READY = Boolean(
   AUTH_SECRET.length >= 32 &&
   /^[a-f0-9]{64}$/i.test(VAULT_KEY)
@@ -49,6 +53,7 @@ if (!AUTH_READY) {
 
 let cameraPromise;
 const pendingDropbox = new Map();
+const aiUsage = new Map();
 
 function connectCamera() {
   if (!cameraPromise) {
@@ -551,13 +556,66 @@ function send(response, status, payload, headers = {}) {
   response.end(JSON.stringify(payload));
 }
 
-async function readJson(request) {
-  let body = '';
+async function readJson(request, maximumBytes = 65_536) {
+  const chunks = [];
+  let length = 0;
   for await (const chunk of request) {
-    body += chunk;
-    if (body.length > 65_536) throw new Error('Request body too large');
+    length += chunk.length;
+    if (length > maximumBytes) throw new Error('Request body too large');
+    chunks.push(chunk);
   }
-  return body ? JSON.parse(body) : {};
+  return length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+}
+
+function aiConfigured() {
+  return AI_API_KEY.length >= 20 && /^https:\/\//i.test(AI_API_BASE_URL) && AI_MODEL.length > 0;
+}
+
+function allowAiRequest(accountId) {
+  const now = Date.now();
+  const current = aiUsage.get(accountId) || [];
+  const recent = current.filter((timestamp) => now - timestamp < 60 * 60 * 1000);
+  if (recent.length >= 30 || (recent.length && now - recent[recent.length - 1] < 8000)) return false;
+  recent.push(now);
+  aiUsage.set(accountId, recent);
+  return true;
+}
+
+function aiText(result) {
+  if (typeof result?.output_text === 'string') return result.output_text.trim();
+  for (const output of result?.output || []) {
+    for (const content of output?.content || []) {
+      if (typeof content?.text === 'string') return content.text.trim();
+    }
+  }
+  const choice = result?.choices?.[0]?.message?.content;
+  return typeof choice === 'string' ? choice.trim() : '';
+}
+
+async function analyzeCameraFrame(imageUrl, cameraName) {
+  const prompt = `Analizza questo singolo fotogramma della telecamera “${cleanText(cameraName, 80, 'Camera')}”. ` +
+    'Descrivi esclusivamente ciò che è realmente visibile, senza identificare persone, dedurre dati sensibili o inventare eventi. ' +
+    'Rispondi in italiano, in modo conciso, con le sezioni SCENA, MOVIMENTO, ELEMENTI RILEVANTI e ATTENZIONE. ' +
+    'In ATTENZIONE indica basso, medio o alto e spiega il motivo; chiarisci quando un singolo fotogramma non basta per stabilire un movimento o un pericolo.';
+  const response = await fetch(`${AI_API_BASE_URL}/responses`, {
+    method:'POST',
+    headers:{ Authorization:`Bearer ${AI_API_KEY}`, 'Content-Type':'application/json' },
+    signal:AbortSignal.timeout(AI_TIMEOUT_MS),
+    body:JSON.stringify({
+      model:AI_MODEL,
+      store:false,
+      max_output_tokens:500,
+      input:[{ role:'user', content:[
+        { type:'input_text', text:prompt },
+        { type:'input_image', detail:'low', image_url:imageUrl },
+      ] }],
+    }),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result?.error?.message || `AI provider ${response.status}`);
+  const text = aiText(result);
+  if (!text) throw new Error('AI provider returned an empty analysis');
+  return text.slice(0, 6000);
 }
 
 const server = http.createServer(async (request, response) => {
@@ -775,6 +833,36 @@ const server = http.createServer(async (request, response) => {
     } catch (error) {
       console.error(`Dropbox upload: ${error.message}`);
       return send(response, 502, { error:'Dropbox upload failed', detail:error.message }, headers);
+    }
+  }
+
+  if (pathname === '/api/ai/status' && request.method === 'GET') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    return send(response, 200, { configured:aiConfigured(), model:aiConfigured() ? AI_MODEL : '' }, headers);
+  }
+
+  if (pathname === '/api/ai/analyze' && request.method === 'POST') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    if (!aiConfigured()) return send(response, 503, { error:'Smart Vision is not configured' }, headers);
+    const data = loadAccounts();
+    const account = accountFromSession(session, data);
+    if (!account) return send(response, 401, { error:'Unauthorized' }, headers);
+    if (!allowAiRequest(account.id)) return send(response, 429, { error:'Wait before requesting another analysis' }, headers);
+    try {
+      const body = await readJson(request, 1_600_000);
+      const image = typeof body.image === 'string' ? body.image : '';
+      if (!/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(image)) throw new Error('Only a JPEG data URL is accepted');
+      const encoded = image.slice(image.indexOf(',') + 1);
+      if (Buffer.byteLength(encoded, 'base64') > 1_100_000) throw new Error('Image is too large');
+      const vault = decryptVault(account);
+      const camera = vault.cameras.find((item) => item.id === cleanText(body.cameraId, 80));
+      if (!camera) return send(response, 404, { error:'Camera not found' }, headers);
+      const analysis = await analyzeCameraFrame(image, camera.name);
+      return send(response, 200, { ok:true, analysis, model:AI_MODEL, analyzedAt:new Date().toISOString() }, headers);
+    } catch (error) {
+      const invalid = /^(Only a JPEG|Image is too large|Request body too large)/.test(error.message);
+      console.error(`Smart Vision: ${invalid ? 'invalid request' : error.message}`);
+      return send(response, invalid ? 400 : 502, { error:invalid ? error.message : 'Smart Vision analysis failed' }, headers);
     }
   }
 

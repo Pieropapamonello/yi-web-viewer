@@ -10,6 +10,7 @@ Una web app multiutente senza pubblicita' per vedere e configurare telecamere HL
 - configurazione guidata di video WebRTC/HLS e gateway PTZ;
 - verifica collegamenti, live a bassa latenza, audio, qualità reale 1080p/480p, fullscreen e orientamento;
 - snapshot e clip persistenti nel browser tramite IndexedDB, con data e ora fino ai secondi impresse nei fotogrammi, download ed eliminazione;
+- Smart Vision opzionale: analisi volontaria di un fotogramma con Groq o xAI, senza esporre la chiave al browser e senza archiviare l'immagine nel gateway;
 - controlli PTZ IPC365 verificati tramite confronto automatico dei fotogrammi;
 - PTZ reattivo con comando alla pressione/swipe, tre intensità, frecce da tastiera, feedback aptico e recupero immediato del bordo live;
 - data e orologio con secondi sovrapposti al live;
@@ -129,6 +130,18 @@ I frame PTZ proprietari sono basati sul progetto open source [MiguelDLM/360eyes_
 Il gateway espone anche `GET /api/capabilities`: l'interfaccia abilita solo le funzioni realmente supportate. Luce, modalità guardia, conversazione bidirezionale e playback TF/cloud restano disattivati finché una cattura separata non ne documenta i comandi, evitando falsi controlli che mostrano successo senza agire sulla camera.
 
 Il rilevamento movimento della pagina confronta piccoli fotogrammi una volta al secondo e registra un evento solo oltre una soglia significativa, con cooldown di 20 secondi. È sospeso durante i movimenti PTZ per evitare falsi positivi. Funziona soltanto finché il viewer è aperto: uno storico continuo richiede un detector/registratore permanente nel gateway Docker.
+
+### Smart Vision con Groq o xAI
+
+La chiave IA deve stare esclusivamente in `camera/onvif.env`; non inserirla mai in `web/config.js` o nel vault della camera. Il valore predefinito usa la Responses API compatibile di Groq:
+
+```env
+AI_API_KEY=crea-una-nuova-chiave
+AI_API_BASE_URL=https://api.groq.com/openai/v1
+AI_MODEL=qwen/qwen3.6-27b
+```
+
+Per xAI imposta `AI_API_BASE_URL=https://api.x.ai/v1` e un modello Grok con input immagine. Il browser ridimensiona il fotogramma a un massimo di 960 px e il gateway applica autenticazione, limiti dimensionali, timeout e rate limit. Le analisi non sostituiscono un sistema di allarme certificato e non effettuano riconoscimento dell'identità.
 
 ### Account multiutente
 
