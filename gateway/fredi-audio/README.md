@@ -22,8 +22,12 @@ Build target: MIPS32 little-endian with the RTS3903N toolchain and tinyalsa
 and builds both the recorder and `sdserver`. `install-recorder.ps1` keeps
 `stream.original` as rollback, installs the binaries, and reboots the camera.
 Recording is opt-in through `/var/tmp/sd/recording.enabled`; completed 60-second
-H.264 segments live in `/var/tmp/sd/recordings`, while `.partial` files are
-never exposed. The default rolling limit is 2 GiB.
+H.264 segments and requested JPEG snapshots live in `/var/tmp/sd/recordings`,
+while `.partial` files are never exposed. `/var/tmp/sd/recording.limit` contains
+an optional byte limit. A value of `0` uses the whole card in circular mode,
+keeps a 512 MiB safety reserve, and deletes only the oldest completed media.
+The authenticated SD helper exposes capacity, timeline, configuration, media
+download and deletion to the account gateway.
 
 Rollback from Telnet, if ever needed:
 

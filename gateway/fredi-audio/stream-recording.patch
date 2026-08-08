@@ -1,18 +1,20 @@
 diff --git a/build/src/stream.c b/build/src/stream.c
 --- a/build/src/stream.c
 +++ b/build/src/stream.c
-@@ -29,13 +29,73 @@
+@@ -29,13 +29,92 @@
  #include <sys/ioctl.h>
  #include <rts_io_adc.h>
  #include <sys/resource.h>
 +#include <time.h>
 +#include <dirent.h>
++#include <sys/statvfs.h>
  
  #define FIFO_NAME_HIGH "/tmp/h264_high_fifo"
 +#define RECORD_FLAG "/var/tmp/sd/recording.enabled"
 +#define RECORD_DIR "/var/tmp/sd/recordings"
++#define RECORD_LIMIT_FILE "/var/tmp/sd/recording.limit"
 +#define RECORD_SEGMENT_SECONDS 60
-+#define RECORD_MAX_BYTES (2ULL * 1024ULL * 1024ULL * 1024ULL)
++#define RECORD_RESERVE_BYTES (512ULL * 1024ULL * 1024ULL)
  //#define DOMAIN_GPIO_MCU    1
  //#define GPIO_ANODE 20
  //#define GPIO_CATHODE 21
@@ -30,20 +32,37 @@ diff --git a/build/src/stream.c b/build/src/stream.c
 +    rename(record_partial, record_final);
 +}
 +
-+static void recorder_trim(void) {
-+    DIR *dir = opendir(RECORD_DIR); struct dirent *entry; struct stat info;
-+    unsigned long long total = 0; char oldest[256] = ""; time_t oldest_time = 0;
-+    if (!dir) return;
++static unsigned long long recorder_limit(void) {
++    FILE *file = fopen(RECORD_LIMIT_FILE, "r"); unsigned long long value = 0;
++    if (file) { fscanf(file, "%llu", &value); fclose(file); }
++    return value;
++}
++
++static unsigned long long recorder_free(void) {
++    struct statvfs filesystem;
++    if (statvfs(RECORD_DIR, &filesystem)) return RECORD_RESERVE_BYTES;
++    return (unsigned long long)filesystem.f_bavail * (unsigned long long)filesystem.f_frsize;
++}
++
++static int recorder_oldest(char *oldest, size_t capacity, unsigned long long *total) {
++    DIR *dir = opendir(RECORD_DIR); struct dirent *entry; struct stat info; time_t oldest_time = 0;
++    if (!dir) return 0; *total = 0; oldest[0] = '\0';
 +    while ((entry = readdir(dir))) {
-+        char full[256];
-+        if (!strstr(entry->d_name, ".h264")) continue;
++        char full[256]; size_t length = strlen(entry->d_name);
++        if (!((length >= 5 && !strcmp(entry->d_name + length - 5, ".h264")) || (length >= 4 && !strcmp(entry->d_name + length - 4, ".jpg")))) continue;
 +        snprintf(full, sizeof(full), "%s/%s", RECORD_DIR, entry->d_name);
-+        if (stat(full, &info)) continue;
-+        total += (unsigned long long)info.st_size;
-+        if (!oldest_time || info.st_mtime < oldest_time) { oldest_time = info.st_mtime; strncpy(oldest, full, sizeof(oldest) - 1); }
++        if (stat(full, &info)) continue; *total += (unsigned long long)info.st_size;
++        if (!oldest_time || info.st_mtime < oldest_time) { oldest_time = info.st_mtime; strncpy(oldest, full, capacity - 1); oldest[capacity - 1] = '\0'; }
 +    }
-+    closedir(dir);
-+    if (total > RECORD_MAX_BYTES && oldest[0]) unlink(oldest);
++    closedir(dir); return oldest[0] != '\0';
++}
++
++static void recorder_trim(void) {
++    unsigned long long limit = recorder_limit(), total = 0; char oldest[256];
++    while (recorder_oldest(oldest, sizeof(oldest), &total)) {
++        if ((limit && total <= limit) || (!limit && recorder_free() >= RECORD_RESERVE_BYTES)) break;
++        if (unlink(oldest)) break;
++    }
 +}
 +
 +static void recorder_open(time_t now) {
@@ -75,7 +94,7 @@ diff --git a/build/src/stream.c b/build/src/stream.c
 +}
  int night = 3;
  int arg_amount = 0;
-@@ -332,6 +392,7 @@ int start_stream() {
+@@ -332,6 +411,7 @@ int start_stream() {
              } else {
                  fflush(fd);
              }
@@ -83,7 +102,7 @@ diff --git a/build/src/stream.c b/build/src/stream.c
              number++;
              rts_av_put_buffer(buffer);
              buffer = NULL;
-@@ -339,4 +400,5 @@ int start_stream() {
+@@ -339,4 +419,5 @@ int start_stream() {
      }
  
      rts_av_disable_chn(isp);

@@ -49,6 +49,10 @@
   let archivePlayback = false;
   let archiveSource = 'local';
   let sdRecording = false;
+  let sdAvailable = false;
+  let sdStorage = { total:0, free:0, max:0, reserve:0 };
+  let mediaFilter = 'all';
+  let mediaViewerClip = null;
   let cloud = null;
   let aiReady = false;
   let personDetector = null;
@@ -371,8 +375,8 @@
       $('talkFeature').disabled = !result.features?.talk;
       $('talkFeature').querySelector('small').textContent = result.features?.talk ? 'Tieni premuto per parlare' : 'Non disponibile';
       $('capabilityHint').textContent = result.features?.talk ? 'Live, audio, PTZ, snapshot, registrazione e audio bidirezionale disponibili.' : 'Live, PTZ, snapshot e registrazione disponibili. Il microfono dipende dal driver della camera.';
-      const sdReady = Boolean(result.features?.sdPlayback);
-      $('sdSource').disabled = !sdReady; $('sdRecordToggle').disabled = !sdReady; $('sdRefresh').disabled = !sdReady;
+      const sdReady = Boolean(result.features?.sdPlayback); sdAvailable = sdReady;
+      $('sdSource').disabled = !sdReady; $('sdRecordToggle').disabled = !sdReady; $('sdRefresh').disabled = !sdReady; $('sdRetention').disabled = !sdReady; $('sdSnapshotStore').disabled = !sdReady;
       $('sdRecordingState').textContent = sdReady ? 'Pronta' : 'Non disponibile';
     } catch { $('capabilityState').textContent = 'Non verificato'; }
   }
@@ -805,8 +809,8 @@
 
   function updateFocusedCamera(camera) {
     disconnectStream();
-    archiveSource = 'local'; sdRecording = false;
-    $('sdSource').classList.remove('active'); $('localSource').classList.add('active'); $('sdSource').disabled = true; $('sdRecordToggle').disabled = true; $('sdRefresh').disabled = true; $('sdDeleteClip').disabled = true;
+    archiveSource = 'local'; sdRecording = false; sdAvailable = false; sdStorage = { total:0, free:0, max:0, reserve:0 };
+    $('sdSource').classList.remove('active'); $('localSource').classList.add('active'); $('sdSource').disabled = true; $('sdRecordToggle').disabled = true; $('sdRefresh').disabled = true; $('sdRetention').disabled = true; $('sdSnapshotStore').disabled = true; $('sdDeleteClip').disabled = true;
     selectedQuality = 'auto';
     $('cameraName').textContent = camera.name;
     $('cameraMeta').textContent = [camera.model, camera.location].filter(Boolean).join(' · ') || 'Modello e posizione non specificati';
@@ -1067,12 +1071,13 @@
     if (!rail) return;
     const selected = $('timelineDate').value || localDateKey();
     const dayEvents = events.filter((item) => localDateKey(new Date(item.createdAt)) === selected);
-    const clipMarkup = archiveClips.map((clip, index) => {
+    const clipMarkup = archiveClips.flatMap((clip, index) => {
+      if (clip.kind === 'snapshot') return [];
       const start = new Date(clip.start);
       const seconds = start.getHours() * 3600 + start.getMinutes() * 60 + start.getSeconds();
       const left = seconds / 86400 * 100;
       const width = Math.max(.28, Number(clip.duration || 60) / 86400 * 100);
-      return `<button class="archive-segment" style="left:${left}%;width:${width}%" data-archive-index="${index}" title="Registrazione ${escapeHtml(start.toLocaleTimeString('it-IT'))}"></button>`;
+      return [`<button class="archive-segment" style="left:${left}%;width:${width}%" data-archive-index="${index}" title="Registrazione ${escapeHtml(start.toLocaleTimeString('it-IT'))}"></button>`];
     }).join('');
     const eventMarkup = dayEvents.map((item, index) => {
       const date = new Date(item.createdAt);
@@ -1096,6 +1101,69 @@
     return `${gatewayBase}${clip.source === 'sd' ? '/api/sd/file' : '/api/archive/file'}?access=${encodeURIComponent(clip.access)}`;
   }
 
+  function updateSdStorage(recordingBytes = 0) {
+    const total = Number(sdStorage.total || 0); const free = Number(sdStorage.free || 0); const used = Math.max(0, total - free); const percent = total ? Math.min(100, used / total * 100) : 0;
+    $('sdStorageBar').style.width = `${percent}%`; $('sdStoragePercent').textContent = total ? `${percent.toFixed(1)}%` : '--%';
+    $('sdStorageText').textContent = total ? `${formatBytes(free)} liberi su ${formatBytes(total)} · archivio ${formatBytes(recordingBytes)}` : 'Spazio non disponibile';
+    const values = [...$('sdRetention').options].map((option) => Number(option.value)); $('sdRetention').value = String(values.includes(Number(sdStorage.max || 0)) ? Number(sdStorage.max || 0) : 0);
+  }
+
+  function mediaThumbnailUrl(clip) {
+    if (clip.source !== 'sd') return '';
+    if (clip.kind === 'snapshot') return archiveUrl(clip);
+    return `${gatewayBase}/api/sd/thumbnail?access=${encodeURIComponent(clip.access)}`;
+  }
+
+  function renderMediaLibrary() {
+    const items = archiveClips.filter((clip) => mediaFilter === 'all' || (clip.kind || 'video') === mediaFilter);
+    const videos = archiveClips.filter((clip) => (clip.kind || 'video') === 'video').length; const snapshots = archiveClips.filter((clip) => clip.kind === 'snapshot').length;
+    $('mediaLibrarySummary').textContent = archiveSource === 'sd' ? `${videos} video · ${snapshots} snapshot · ${formatBytes(archiveClips.reduce((sum, clip) => sum + Number(clip.size || 0), 0))}` : `${archiveClips.length} registrazioni nell'archivio locale`;
+    if (!items.length) { $('mediaLibraryGrid').innerHTML = '<div class="media-library-empty">Nessun contenuto per questo filtro e questa data.</div>'; return; }
+    $('mediaLibraryGrid').innerHTML = items.map((clip) => {
+      const start = new Date(clip.start); const kind = clip.kind || 'video'; const thumbnail = mediaThumbnailUrl(clip);
+      return `<button class="media-card" data-media-name="${escapeHtml(clip.name)}"><span class="media-card-preview">${thumbnail ? `<img src="${escapeHtml(thumbnail)}" loading="lazy" alt="">` : icon(kind === 'snapshot' ? 'snapshot' : 'record')}<span>${kind === 'snapshot' ? 'FOTO' : `${Math.round(clip.duration || 60)} SEC`}</span></span><span class="media-card-info"><b>${escapeHtml(start.toLocaleTimeString('it-IT'))}</b><small>${escapeHtml(start.toLocaleDateString('it-IT'))} · ${escapeHtml(formatBytes(clip.size || 0))}</small></span></button>`;
+    }).join('');
+    $('mediaLibraryGrid').querySelectorAll('[data-media-name]').forEach((button) => button.addEventListener('click', () => openMediaViewer(archiveClips.find((clip) => clip.name === button.dataset.mediaName))));
+  }
+
+  function updateTrimControls(changed = '') {
+    let start = Number($('trimStart').value); let end = Number($('trimEnd').value); const maximum = Math.max(1, Math.round(mediaViewerClip?.duration || 60));
+    if (changed === 'start' && start >= end) end = Math.min(maximum, start + 1);
+    if (changed === 'end' && end <= start) start = Math.max(0, end - 1);
+    $('trimStart').value = String(start); $('trimEnd').value = String(end); $('trimStartValue').textContent = `${start} s`; $('trimEndValue').textContent = `${end} s`; $('trimDuration').textContent = `${start} - ${end} secondi · durata ${end - start} s`;
+  }
+
+  function openMediaViewer(clip) {
+    if (!clip) return; mediaViewerClip = clip; selectedArchiveClip = clip;
+    const isSnapshot = clip.kind === 'snapshot'; const source = archiveUrl(clip); const date = new Date(clip.start);
+    const location = clip.source === 'sd' ? 'MicroSD' : 'Archivio locale'; $('mediaViewerType').textContent = `${isSnapshot ? 'Snapshot' : 'Registrazione'} · ${location}`; $('mediaViewerTitle').textContent = isSnapshot ? 'Snapshot' : 'Clip video'; $('mediaViewerMeta').textContent = `${date.toLocaleString('it-IT')} · ${formatBytes(clip.size || 0)}`;
+    $('mediaDelete').hidden = clip.source !== 'sd';
+    $('mediaViewerImage').hidden = !isSnapshot; $('mediaViewerVideo').hidden = isSnapshot; $('trimEditor').hidden = isSnapshot || clip.source !== 'sd'; $('mediaTrimExport').hidden = isSnapshot || clip.source !== 'sd';
+    if (isSnapshot) { $('mediaViewerVideo').pause(); $('mediaViewerVideo').removeAttribute('src'); $('mediaViewerImage').src = source; }
+    else { $('mediaViewerImage').removeAttribute('src'); $('mediaViewerVideo').src = source; $('mediaViewerVideo').play().catch(() => {}); const maximum = Math.max(1, Math.round(clip.duration || 60)); $('trimStart').max = String(maximum - 1); $('trimEnd').max = String(maximum); $('trimStart').value = '0'; $('trimEnd').value = String(maximum); updateTrimControls(); }
+    $('mediaDialog').showModal();
+  }
+
+  async function shareMediaBlob(blob, name, title = 'Archivio FREDI Control') {
+    const file = new File([blob], name, { type:blob.type || (name.endsWith('.jpg') ? 'image/jpeg' : 'video/mp4') });
+    if (navigator.canShare?.({ files:[file] })) return navigator.share({ title, files:[file] });
+    const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = name; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1500); toast('File scaricato sul dispositivo.', 'success');
+  }
+
+  async function shareViewedMedia() {
+    if (!mediaViewerClip) return;
+    try { const response = await fetch(archiveUrl(mediaViewerClip)); if (!response.ok) throw new Error('Contenuto non raggiungibile'); const blob = await response.blob(); const name = mediaViewerClip.source === 'sd' ? mediaViewerClip.name.replace(/\.h264$/i, '.mp4') : mediaViewerClip.name; await shareMediaBlob(blob, name); }
+    catch (error) { if (error.name !== 'AbortError') toast(error.message, 'error'); }
+  }
+
+  async function exportTrimmedMedia() {
+    const clip = mediaViewerClip; if (!clip || clip.source !== 'sd' || clip.kind === 'snapshot') return;
+    const start = Number($('trimStart').value); const end = Number($('trimEnd').value); $('mediaTrimExport').disabled = true;
+    try { const url = `${gatewayBase}/api/sd/export?access=${encodeURIComponent(clip.access)}&start=${start}&duration=${end - start}`; const response = await fetch(url); if (!response.ok) throw new Error('Esportazione intervallo non riuscita'); const blob = await response.blob(); const name = clip.name.replace(/\.h264$/i, `_da-${start}s_a-${end}s.mp4`); await shareMediaBlob(blob, name, 'Estratto FREDI Control'); }
+    catch (error) { if (error.name !== 'AbortError') toast(error.message, 'error'); }
+    finally { $('mediaTrimExport').disabled = false; }
+  }
+
   async function loadArchive(cameraId = activeId) {
     if (!cameraId || !$('timelineDate').value) return;
     $('archiveState').textContent = 'Caricamento…';
@@ -1106,13 +1174,14 @@
       archiveClips = result.clips || [];
       if (archiveSource === 'sd') {
         sdRecording = Boolean(result.recording); $('sdRecordingState').textContent = sdRecording ? 'REGISTRA' : 'Pronta'; $('sdRecordToggle').textContent = sdRecording ? 'Ferma registrazione' : 'Avvia registrazione'; document.querySelector('.sd-panel').classList.toggle('recording', sdRecording);
+        sdStorage = result.storage || { total:0, free:0, max:0, reserve:0 }; updateSdStorage(result.usage || 0);
       }
       $('archiveState').textContent = archiveClips.length ? `${archiveClips.length} clip · ${formatBytes(result.usage || 0)}` : 'Nessuna clip';
-      $('localArchiveState').textContent = `${result.retentionDays || 7} giorni · ${archiveClips.length} clip nel giorno`;
+      if (archiveSource === 'local') $('localArchiveState').textContent = `${result.retentionDays || 7} giorni · ${archiveClips.length} clip nel giorno`;
     } catch (error) {
-      archiveClips = []; $('archiveState').textContent = 'Archivio non raggiungibile'; $('localArchiveState').textContent = error.message;
+      archiveClips = []; $('archiveState').textContent = 'Archivio non raggiungibile'; if (archiveSource === 'local') $('localArchiveState').textContent = error.message;
     }
-    selectedArchiveClip = null; $('uploadDropbox').disabled = true; $('sdDeleteClip').disabled = true; renderPlaybackTimeline();
+    selectedArchiveClip = null; $('uploadDropbox').disabled = true; $('sdDeleteClip').disabled = true; renderPlaybackTimeline(); renderMediaLibrary();
   }
 
   function selectArchiveClip(clip, offsetSeconds = 0) {
@@ -1153,12 +1222,22 @@
     finally { $('sdRecordToggle').disabled = false; }
   }
 
+  async function saveSdRetention() {
+    const camera = currentCamera(); if (!camera || !sdAvailable) return;
+    $('sdRetention').disabled = true;
+    try {
+      const maxBytes = Number($('sdRetention').value); await gatewayFetch('/api/sd/config', { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ cameraId:camera.id, maxBytes }) });
+      sdStorage.max = maxBytes; toast(maxBytes ? `Limite circolare impostato a ${formatBytes(maxBytes)}.` : 'La registrazione usera tutta la microSD mantenendo 512 MB liberi.', 'success'); await loadArchive(camera.id);
+    } catch (error) { toast(error.message, 'error'); }
+    finally { $('sdRetention').disabled = false; }
+  }
+
   async function deleteSelectedSdClip() {
     const camera = currentCamera(); const clip = selectedArchiveClip;
     if (!camera || clip?.source !== 'sd' || !confirm(`Eliminare ${clip.name} dalla microSD?`)) return;
     try {
       await gatewayFetch('/api/sd/file', { method:'DELETE', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ cameraId:camera.id, name:clip.name }) });
-      selectedArchiveClip = null; archivePlayback = false; $('sdDeleteClip').disabled = true; await loadArchive(camera.id); returnToLive(); toast('Clip eliminata dalla microSD.', 'success');
+      if ($('mediaDialog').open) $('mediaDialog').close(); mediaViewerClip = null; selectedArchiveClip = null; archivePlayback = false; $('sdDeleteClip').disabled = true; await loadArchive(camera.id); returnToLive(); toast('Contenuto eliminato dalla microSD.', 'success');
     } catch (error) { toast(error.message, 'error'); }
   }
 
@@ -1421,13 +1500,22 @@
       if (!blob) return toast('Impossibile creare lo snapshot.', 'error');
       const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${slug(camera.name)}-${fileTimestamp(capturedAt)}.jpg`; link.click();
       setTimeout(() => URL.revokeObjectURL(link.href), 1000); $('snapshotState').textContent = capturedAt.toLocaleString('it-IT'); recordActivity('snapshot', 'Snapshot acquisito', `${camera.name}: immagine del ${capturedAt.toLocaleString('it-IT')} salvata sul dispositivo.`);
+      let sdSaved = false;
+      if (sdAvailable && $('sdSnapshotStore').checked) {
+        try {
+          const query = new URLSearchParams({ cameraId:camera.id, stamp:fileTimestamp(capturedAt) });
+          await gatewayFetch(`/api/sd/snapshot?${query}`, { method:'POST', headers:{ 'Content-Type':'image/jpeg' }, body:blob }); sdSaved = true;
+          if (archiveSource === 'sd' && $('timelineDate').value === localDateKey(capturedAt)) await loadArchive(camera.id);
+        } catch (error) { toast(`Snapshot scaricato; microSD: ${error.message}`, 'error'); }
+      }
       if (cloud?.dropbox?.connected && cloud.dropbox.snapshotBackup) {
         try {
           const query = new URLSearchParams({ cameraId:camera.id, stamp:fileTimestamp(capturedAt) });
           await gatewayFetch(`/api/cloud/dropbox/snapshot?${query}`, { method:'POST', headers:{ 'Content-Type':'image/jpeg' }, body:blob });
-          toast('Snapshot scaricato e salvato su Dropbox.', 'success');
+          toast(`Snapshot salvato${sdSaved ? ' su microSD e' : ''} su Dropbox.`, 'success');
         } catch (error) { toast(`Snapshot locale salvato; Dropbox: ${error.message}`, 'error'); }
-      } else toast('Snapshot con data e ora scaricato.', 'success');
+      } else if (sdSaved) toast('Snapshot scaricato e archiviato sulla microSD.', 'success');
+      else toast('Snapshot con data e ora scaricato.', 'success');
     }, 'image/jpeg', .92);
   }
 
@@ -1628,9 +1716,7 @@
     if (!selectedArchiveClip) return toast('Seleziona prima una clip nella timeline.', 'error');
     try {
       const response = await fetch(archiveUrl(selectedArchiveClip)); if (!response.ok) throw new Error('Clip non raggiungibile');
-      const blob = await response.blob(); const isWebm = selectedArchiveClip.name.toLowerCase().endsWith('.webm'); const mime = isWebm ? 'video/webm' : 'video/mp4'; const fileName = selectedArchiveClip.source === 'sd' ? selectedArchiveClip.name.replace(/\.h264$/i, '.mp4') : selectedArchiveClip.name; const file = new File([blob], fileName, { type:mime });
-      if (navigator.canShare?.({ files:[file] })) await navigator.share({ title:'Registrazione FREDI Control', files:[file] });
-      else { const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000); toast('Clip scaricata. Apri MEGA e caricala nel tuo account.', 'success'); }
+      const blob = await response.blob(); const fileName = selectedArchiveClip.source === 'sd' ? selectedArchiveClip.name.replace(/\.h264$/i, '.mp4') : selectedArchiveClip.name; await shareMediaBlob(blob, fileName, 'Registrazione FREDI Control');
     } catch (error) { if (error.name !== 'AbortError') toast(error.message, 'error'); }
   }
 
@@ -1742,6 +1828,11 @@
     $('sdRecordToggle').addEventListener('click', toggleSdRecording);
     $('sdRefresh').addEventListener('click', () => { archiveSource = 'sd'; $('sdSource').classList.add('active'); $('localSource').classList.remove('active'); loadArchive(activeId); });
     $('sdDeleteClip').addEventListener('click', deleteSelectedSdClip);
+    $('sdRetention').addEventListener('change', saveSdRetention);
+    document.querySelectorAll('[data-media-filter]').forEach((button) => button.addEventListener('click', () => { mediaFilter = button.dataset.mediaFilter; document.querySelectorAll('[data-media-filter]').forEach((item) => item.classList.toggle('active', item === button)); renderMediaLibrary(); }));
+    $('trimStart').addEventListener('input', () => updateTrimControls('start')); $('trimEnd').addEventListener('input', () => updateTrimControls('end'));
+    $('mediaShare').addEventListener('click', shareViewedMedia); $('mediaTrimExport').addEventListener('click', exportTrimmedMedia); $('mediaDelete').addEventListener('click', deleteSelectedSdClip);
+    $('mediaDialog').addEventListener('close', () => { $('mediaViewerVideo').pause(); $('mediaViewerVideo').removeAttribute('src'); $('mediaViewerImage').removeAttribute('src'); mediaViewerClip = null; });
     $('dropboxConnect').addEventListener('click', toggleDropboxConnection);
     $('dropboxAuto').addEventListener('change', () => setDropboxSettings($('dropboxAuto')));
     $('dropboxSnapshots').addEventListener('change', () => setDropboxSettings($('dropboxSnapshots')));

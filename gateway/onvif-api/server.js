@@ -186,11 +186,13 @@ function frediCameraForAccount(account, cameraId) {
 }
 
 function frediSdClip(entry, date, clockOffsetMs = 0) {
-  const match = /^fredi_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})\.h264$/.exec(String(entry.name || ''));
-  if (!match) return null;
-  const start = new Date(Number(entry.mtime || 0) * 1000 + clockOffsetMs - 60000);
+  const name = String(entry.name || '');
+  const video = /^fredi_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.h264$/.test(name);
+  const image = /^snapshot_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.jpg$/.test(name);
+  if (!video && !image) return null;
+  const start = new Date(Number(entry.mtime || 0) * 1000 + clockOffsetMs - (video ? 60000 : 0));
   if (localDateKeyServer(start) !== date) return null;
-  return { name:entry.name, start:start.toISOString(), duration:60, size:Number(entry.size || 0), source:'sd' };
+  return { name, start:start.toISOString(), duration:video ? 60 : 0, size:Number(entry.size || 0), source:'sd', kind:video ? 'video' : 'snapshot', mime:video ? 'video/mp4' : 'image/jpeg' };
 }
 
 function localDateKeyServer(date) {
@@ -968,13 +970,41 @@ const server = http.createServer(async (request, response) => {
   }
 
   const session = sessionFromRequest(request);
-  if (pathname === '/api/sd/file' && request.method === 'GET') {
+  if (pathname === '/api/sd/thumbnail' && request.method === 'GET') {
     const access = verifySignedToken(requestUrl.searchParams.get('access') || '');
     if (!access || access.kind !== 'fredi-sd' || !/^[a-zA-Z0-9_.-]+\.h264$/.test(access.name || '')) return send(response, 401, { error:'SD link expired' }, headers);
     const account = accountFromSession(access, loadAccounts());
     if (!account || !frediCameraForAccount(account, access.cameraId)) return send(response, 404, { error:'SD clip not found' }, headers);
     const remoteUrl = `http://${FREDI_PTZ_HOST}:${FREDI_SD_PORT}/files/${encodeURIComponent(access.name)}`;
     try { await frediSdFetch('/health'); } catch { return send(response, 502, { error:'FREDI SD server unavailable' }, headers); }
+    const ffmpeg = spawn('ffmpeg', ['-hide_banner','-loglevel','error','-headers',`Authorization: Bearer ${FREDI_SD_SECRET}\r\n`,'-f','h264','-i',remoteUrl,'-frames:v','1','-vf','scale=480:-2','-q:v','4','-f','image2','pipe:1'], { stdio:['ignore','pipe','pipe'] });
+    response.writeHead(200, { ...headers, 'Content-Type':'image/jpeg', 'Cache-Control':'private, max-age=300' }); ffmpeg.stdout.pipe(response);
+    response.on('close', () => { if (!response.writableEnded && !ffmpeg.killed) ffmpeg.kill('SIGKILL'); }); return;
+  }
+  if (pathname === '/api/sd/export' && request.method === 'GET') {
+    const access = verifySignedToken(requestUrl.searchParams.get('access') || '');
+    const start = Math.max(0, Math.min(59, Number(requestUrl.searchParams.get('start') || 0))); const duration = Math.max(1, Math.min(60 - start, Number(requestUrl.searchParams.get('duration') || 60)));
+    if (!access || access.kind !== 'fredi-sd' || !/^[a-zA-Z0-9_.-]+\.h264$/.test(access.name || '')) return send(response, 401, { error:'SD link expired' }, headers);
+    const account = accountFromSession(access, loadAccounts());
+    if (!account || !frediCameraForAccount(account, access.cameraId)) return send(response, 404, { error:'SD clip not found' }, headers);
+    const remoteUrl = `http://${FREDI_PTZ_HOST}:${FREDI_SD_PORT}/files/${encodeURIComponent(access.name)}`;
+    try { await frediSdFetch('/health'); } catch { return send(response, 502, { error:'FREDI SD server unavailable' }, headers); }
+    const ffmpeg = spawn('ffmpeg', ['-hide_banner','-loglevel','error','-headers',`Authorization: Bearer ${FREDI_SD_SECRET}\r\n`,'-f','h264','-i',remoteUrl,'-ss',String(start),'-t',String(duration),'-c:v','libx264','-preset','veryfast','-crf','22','-movflags','frag_keyframe+empty_moov+default_base_moof','-f','mp4','pipe:1'], { stdio:['ignore','pipe','pipe'] });
+    const name = access.name.replace(/\.h264$/, `_da-${Math.round(start)}s_a-${Math.round(start + duration)}s.mp4`);
+    response.writeHead(200, { ...headers, 'Content-Type':'video/mp4', 'Cache-Control':'private, no-store', 'Content-Disposition':`attachment; filename="${name}"` }); ffmpeg.stdout.pipe(response);
+    response.on('close', () => { if (!response.writableEnded && !ffmpeg.killed) ffmpeg.kill('SIGKILL'); }); return;
+  }
+  if (pathname === '/api/sd/file' && request.method === 'GET') {
+    const access = verifySignedToken(requestUrl.searchParams.get('access') || '');
+    if (!access || access.kind !== 'fredi-sd' || !/^[a-zA-Z0-9_.-]+\.(?:h264|jpg)$/.test(access.name || '')) return send(response, 401, { error:'SD link expired' }, headers);
+    const account = accountFromSession(access, loadAccounts());
+    if (!account || !frediCameraForAccount(account, access.cameraId)) return send(response, 404, { error:'SD clip not found' }, headers);
+    const remoteUrl = `http://${FREDI_PTZ_HOST}:${FREDI_SD_PORT}/files/${encodeURIComponent(access.name)}`;
+    try { await frediSdFetch('/health'); } catch { return send(response, 502, { error:'FREDI SD server unavailable' }, headers); }
+    if (access.name.endsWith('.jpg')) {
+      try { const remote = await frediSdFetch(`/files/${encodeURIComponent(access.name)}`); const body = Buffer.from(await remote.arrayBuffer()); response.writeHead(200, { ...headers, 'Content-Type':'image/jpeg', 'Content-Length':body.length, 'Cache-Control':'private, no-store' }); return response.end(body); }
+      catch { return send(response, 502, { error:'Snapshot unavailable' }, headers); }
+    }
     const ffmpeg = spawn('ffmpeg', ['-hide_banner','-loglevel','error','-headers',`Authorization: Bearer ${FREDI_SD_SECRET}\r\n`,'-f','h264','-i',remoteUrl,'-c:v','copy','-movflags','frag_keyframe+empty_moov+default_base_moof','-f','mp4','pipe:1'], { stdio:['ignore','pipe','pipe'] });
     response.writeHead(200, { ...headers, 'Content-Type':'video/mp4', 'Cache-Control':'private, no-store', 'Content-Disposition':`inline; filename="${access.name.replace(/\.h264$/, '.mp4')}"` });
     ffmpeg.stdout.pipe(response); ffmpeg.stderr.on('data', (chunk) => console.error(`SD remux: ${chunk.toString().trim()}`));
@@ -1009,7 +1039,7 @@ const server = http.createServer(async (request, response) => {
       const remote = await (await frediSdFetch('/list')).json();
       const clockOffsetMs = Date.now() - Number(remote.now || Math.floor(Date.now() / 1000)) * 1000;
       const clips = (Array.isArray(remote.files) ? remote.files : []).map((entry) => frediSdClip(entry, date, clockOffsetMs)).filter(Boolean).sort((a, b) => a.start.localeCompare(b.start)).map((clip) => ({ ...clip, access:signSession({ kind:'fredi-sd', sub:account.id, ver:account.sessionVersion || '1', exp:Date.now() + 10 * 60 * 1000, cameraId, name:clip.name }) }));
-      return send(response, 200, { ok:true, recording:Boolean(remote.recording), clips, usage:clips.reduce((sum, clip) => sum + clip.size, 0) }, headers);
+      return send(response, 200, { ok:true, recording:Boolean(remote.recording), clips, usage:Number(remote.recordingBytes || clips.reduce((sum, clip) => sum + clip.size, 0)), storage:{ total:Number(remote.totalBytes || 0), free:Number(remote.freeBytes || 0), max:Number(remote.maxBytes || 0), reserve:Number(remote.reserveBytes || 0) } }, headers);
     } catch (error) { console.error(`FREDI SD list: ${error.message}`); return send(response, 502, { error:'FREDI microSD unavailable' }, headers); }
   }
 
@@ -1023,11 +1053,35 @@ const server = http.createServer(async (request, response) => {
     } catch (error) { return send(response, 502, { error:'FREDI microSD command failed', detail:error.message }, headers); }
   }
 
+  if (pathname === '/api/sd/config' && request.method === 'POST') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    try {
+      const body = await readJson(request); const account = accountFromSession(session, loadAccounts()); const cameraId = cleanText(body.cameraId, 80);
+      if (!account || !frediCameraForAccount(account, cameraId)) return send(response, 404, { error:'FREDI camera not found' }, headers);
+      const maxBytes = Number(body.maxBytes || 0); const allowed = [0, 2, 8, 16, 32, 64].map((gb) => gb * 1024 ** 3);
+      if (!allowed.includes(maxBytes)) return send(response, 400, { error:'Invalid SD retention limit' }, headers);
+      await frediSdFetch('/record/config', { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ maxBytes }) });
+      return send(response, 200, { ok:true, maxBytes }, headers);
+    } catch (error) { return send(response, 502, { error:'SD retention configuration failed', detail:error.message }, headers); }
+  }
+
+  if (pathname === '/api/sd/snapshot' && request.method === 'POST') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    try {
+      const account = accountFromSession(session, loadAccounts()); const cameraId = cleanText(requestUrl.searchParams.get('cameraId'), 80); const stamp = cleanText(requestUrl.searchParams.get('stamp'), 32);
+      if (!account || !frediCameraForAccount(account, cameraId)) return send(response, 404, { error:'FREDI camera not found' }, headers);
+      if (!/^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/.test(stamp) || !String(request.headers['content-type'] || '').toLowerCase().startsWith('image/jpeg')) return send(response, 400, { error:'Invalid snapshot' }, headers);
+      const body = await readBinary(request, 8 * 1024 * 1024); if (body.length < 1024) return send(response, 400, { error:'Snapshot is empty' }, headers);
+      const name = `snapshot_${stamp}.jpg`; await frediSdFetch(`/snapshots/${name}`, { method:'POST', headers:{ 'Content-Type':'image/jpeg', 'Content-Length':String(body.length) }, body });
+      return send(response, 200, { ok:true, name, size:body.length }, headers);
+    } catch (error) { return send(response, 502, { error:'SD snapshot failed', detail:error.message }, headers); }
+  }
+
   if (pathname === '/api/sd/file' && request.method === 'DELETE') {
     if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
     try {
       const body = await readJson(request); const account = accountFromSession(session, loadAccounts()); const name = cleanText(body.name, 190);
-      if (!account || !frediCameraForAccount(account, cleanText(body.cameraId, 80)) || !/^[a-zA-Z0-9_.-]+\.h264$/.test(name)) return send(response, 404, { error:'SD clip not found' }, headers);
+      if (!account || !frediCameraForAccount(account, cleanText(body.cameraId, 80)) || !/^[a-zA-Z0-9_.-]+\.(?:h264|jpg)$/.test(name)) return send(response, 404, { error:'SD media not found' }, headers);
       await frediSdFetch(`/files/${encodeURIComponent(name)}`, { method:'DELETE' }); return send(response, 200, { ok:true }, headers);
     } catch (error) { return send(response, 502, { error:'SD clip delete failed', detail:error.message }, headers); }
   }
