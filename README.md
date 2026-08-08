@@ -9,7 +9,7 @@ Una web app multiutente senza pubblicita' per vedere e configurare telecamere HL
 - posizione, note, preferiti, filtro e ordinamento sincronizzati per account;
 - configurazione guidata di video HLS e gateway PTZ;
 - verifica collegamenti, live a bassa latenza, audio, qualità reale 1080p/480p, fullscreen e orientamento;
-- snapshot e clip persistenti nel browser tramite IndexedDB, con download ed eliminazione;
+- snapshot e clip persistenti nel browser tramite IndexedDB, con data e ora fino ai secondi impresse nei fotogrammi, download ed eliminazione;
 - controlli PTZ IPC365 verificati tramite confronto automatico dei fotogrammi;
 - PTZ con swipe sul video, tre intensità, frecce da tastiera, feedback aptico e stop rapido;
 - data e orologio con secondi sovrapposti al live;

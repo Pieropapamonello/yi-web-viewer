@@ -20,6 +20,8 @@
   let hls = null;
   let mediaRecorder = null;
   let chunks = [];
+  let recordingAnimation = 0;
+  let recordingStream = null;
   let toastTimer = null;
   let deferredInstallPrompt = null;
   let draggedId = '';
@@ -453,6 +455,7 @@
   }
 
   function disconnectStream() {
+    if (mediaRecorder?.state === 'recording') mediaRecorder.stop();
     stopMotionDetection();
     hls?.destroy(); hls = null;
     player.pause(); player.removeAttribute('src'); player.load();
@@ -726,25 +729,67 @@
     const camera = currentCamera();
     if (!camera || !player.videoWidth) return toast('Avvia il live prima dello snapshot.', 'error');
     const canvas = document.createElement('canvas'); canvas.width = player.videoWidth; canvas.height = player.videoHeight;
-    canvas.getContext('2d').drawImage(player, 0, 0);
+    const capturedAt = new Date();
+    drawStampedFrame(canvas, capturedAt, camera);
     canvas.toBlob((blob) => {
-      const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${slug(camera.name)}-${Date.now()}.jpg`; link.click();
-      setTimeout(() => URL.revokeObjectURL(link.href), 1000); $('snapshotState').textContent = new Date().toLocaleTimeString('it-IT'); recordActivity('snapshot', 'Snapshot acquisito', `${camera.name}: immagine salvata sul dispositivo.`); toast('Snapshot scaricato.', 'success');
+      const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${slug(camera.name)}-${fileTimestamp(capturedAt)}.jpg`; link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000); $('snapshotState').textContent = capturedAt.toLocaleString('it-IT'); recordActivity('snapshot', 'Snapshot acquisito', `${camera.name}: immagine del ${capturedAt.toLocaleString('it-IT')} salvata sul dispositivo.`); toast('Snapshot con data e ora scaricato.', 'success');
     }, 'image/jpeg', .92);
   }
 
   function slug(value) { return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'camera'; }
 
+  function fileTimestamp(date = new Date()) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}_${String(date.getHours()).padStart(2, '0')}-${String(date.getMinutes()).padStart(2, '0')}-${String(date.getSeconds()).padStart(2, '0')}`;
+  }
+
+  function drawStampedFrame(canvas, date = new Date(), camera = currentCamera()) {
+    const context = canvas.getContext('2d');
+    context.save();
+    if (camera?.rotation === 180) {
+      context.translate(canvas.width, canvas.height); context.rotate(Math.PI);
+    }
+    context.drawImage(player, 0, 0, canvas.width, canvas.height);
+    context.restore();
+    const stamp = date.toLocaleString('it-IT', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
+    const fontSize = Math.max(18, Math.round(canvas.width / 48));
+    const padding = Math.max(10, Math.round(fontSize * .55));
+    context.font = `600 ${fontSize}px ui-monospace, SFMono-Regular, Consolas, monospace`;
+    context.textBaseline = 'middle';
+    const textWidth = context.measureText(stamp).width;
+    const boxHeight = fontSize + padding * 1.25;
+    const x = padding; const y = canvas.height - boxHeight - padding;
+    context.fillStyle = 'rgba(0,0,0,.72)'; context.fillRect(x, y, textWidth + padding * 2, boxHeight);
+    context.fillStyle = '#fff'; context.fillText(stamp, x + padding, y + boxHeight / 2);
+  }
+
   function toggleRecording() {
-    if (!player.captureStream || player.paused) return toast('Avvia il live prima di registrare.', 'error');
+    if (!HTMLCanvasElement.prototype.captureStream || player.paused) return toast('Avvia il live in un browser compatibile prima di registrare.', 'error');
     if (mediaRecorder?.state === 'recording') { mediaRecorder.stop(); return; }
     try {
-      chunks = []; mediaRecorder = new MediaRecorder(player.captureStream(), { mimeType:'video/webm' });
+      const camera = currentCamera();
+      const canvas = document.createElement('canvas'); canvas.width = player.videoWidth; canvas.height = player.videoHeight;
+      const renderFrame = () => { drawStampedFrame(canvas, new Date(), camera); recordingAnimation = requestAnimationFrame(renderFrame); };
+      renderFrame();
+      recordingStream = canvas.captureStream(25);
+      const sourceStream = player.captureStream?.();
+      sourceStream?.getAudioTracks().forEach((track) => recordingStream.addTrack(track.clone()));
+      const preferredMime = MediaRecorder.isTypeSupported?.('video/webm;codecs=vp8,opus') ? 'video/webm;codecs=vp8,opus' : 'video/webm';
+      chunks = []; mediaRecorder = new MediaRecorder(recordingStream, { mimeType:preferredMime });
       mediaRecorder.ondataavailable = (event) => event.data.size && chunks.push(event.data);
       mediaRecorder.onstart = () => { $('recordButton').classList.add('recording'); $('recordButton').querySelector('span').textContent = 'Ferma'; };
-      mediaRecorder.onstop = () => { $('recordButton').classList.remove('recording'); $('recordButton').querySelector('span').textContent = 'Registra'; addRecording(new Blob(chunks, { type:'video/webm' })); };
-      mediaRecorder.start();
-    } catch { toast('Registrazione non supportata dal browser.', 'error'); }
+      mediaRecorder.onstop = () => {
+        cancelAnimationFrame(recordingAnimation); recordingAnimation = 0;
+        recordingStream?.getTracks().forEach((track) => track.stop()); recordingStream = null;
+        $('recordButton').classList.remove('recording'); $('recordButton').querySelector('span').textContent = 'Registra';
+        addRecording(new Blob(chunks, { type:preferredMime }), camera);
+      };
+      mediaRecorder.start(1000);
+    } catch {
+      cancelAnimationFrame(recordingAnimation); recordingAnimation = 0;
+      recordingStream?.getTracks().forEach((track) => track.stop()); recordingStream = null;
+      toast('Registrazione non supportata dal browser.', 'error');
+    }
   }
 
   function mediaDatabase() {
@@ -786,8 +831,8 @@
     } catch { $('recordingEmpty').hidden = false; }
   }
 
-  async function addRecording(blob) {
-    const camera = currentCamera(); if (!camera) return;
+  async function addRecording(blob, recordedCamera = currentCamera()) {
+    const camera = recordedCamera; if (!camera) return;
     try { await saveRecording(blob, camera); await loadRecordings(camera.id); await updateStorageEstimate(); recordActivity('clip', 'Registrazione salvata', `${camera.name}: clip locale da ${formatBytes(blob.size)}.`); toast('Clip salvata in modo persistente su questo dispositivo.', 'success'); }
     catch { toast('Impossibile salvare la clip: controlla lo spazio disponibile.', 'error'); }
   }
