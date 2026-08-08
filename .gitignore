@@ -2,3 +2,8 @@
 *.env
 data/
 recordings/
+node_modules/
+.wrangler/
+.dev.vars*
+dist/
+*.cpuprofile

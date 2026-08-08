@@ -145,6 +145,20 @@ AI_MODEL=qwen/qwen3.6-27b
 
 Per xAI imposta `AI_API_BASE_URL=https://api.x.ai/v1` e un modello Grok con input immagine. Il browser ridimensiona il fotogramma a un massimo di 960 px e il gateway applica autenticazione, limiti dimensionali, timeout e rate limit. Le analisi non sostituiscono un sistema di allarme certificato e non effettuano riconoscimento dell'identità.
 
+### Smart Detect con Cloudflare Workers AI
+
+Il Worker in `cloudflare/smart-detect` espone un endpoint compatibile con la Responses API usata dal gateway e analizza un solo JPEG alla volta con il binding nativo Workers AI. Il modello segnala persone, animali, veicoli, pacchi/oggetti lasciati e un livello di attenzione, senza riconoscimento dell'identità. L'endpoint confronta a tempo costante il Bearer token con il solo hash SHA-256 configurato in `wrangler.jsonc`; immagini, prompt e credenziali non vengono registrati dal codice applicativo.
+
+Configurazione gateway locale:
+
+```env
+AI_API_KEY=
+AI_API_BASE_URL=https://fredi-smart-detect.lillisuzz-sfm.workers.dev
+AI_MODEL=@cf/moondream/moondream3.1-9B-A2B
+```
+
+Con `AI_API_KEY` vuota il gateway riutilizza `API_TOKEN`, che rimane esclusivamente nel file locale. Per distribuire o aggiornare il Worker: `cd cloudflare/smart-detect`, `npm install`, `npm run cf:types`, `npm run check`, `npm run deploy:dry`, quindi `npm run deploy`.
+
 ### Account multiutente
 
 Il gateway espone registrazione pubblica, login e vault separati:

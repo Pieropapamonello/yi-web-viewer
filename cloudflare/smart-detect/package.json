@@ -1,0 +1,19 @@
+{
+  "name": "fredi-smart-detect",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "cf:types": "wrangler types",
+    "deploy:dry": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy",
+    "startup": "wrangler check startup"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "@types/node": "^26.2.0",
+    "typescript": "latest",
+    "wrangler": "latest"
+  }
+}
