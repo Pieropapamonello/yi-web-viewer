@@ -168,6 +168,9 @@ services:
       - warning
       - -rtsp_transport
       - tcp
+      # Exit a stale RTSP socket after ten seconds; restart policy reconnects.
+      - -timeout
+      - "10000000"
       - -i
       - ${FREDI_G1_RTSP_URL:?Set FREDI_G1_RTSP_URL in .env before starting Docker}
       - -map
