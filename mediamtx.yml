@@ -11,6 +11,7 @@ webrtc: true
 webrtcAddress: :8889
 webrtcAllowOrigins: ['https://yi-web-viewer.onrender.com']
 webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
 webrtcAdditionalHosts: ['192.168.1.2', 'nelloonrender.duckdns.org']
 
 paths:
