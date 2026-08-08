@@ -1,0 +1,17 @@
+# FREDI G1 talk helper
+
+`talkd` receives authenticated 8 kHz mono signed 16-bit PCM from the LAN
+gateway and writes it to the RTS3903N ALSA playback device. It binds only on
+the camera LAN and requires a random token of at least 24 characters before
+accepting audio.
+
+The browser never connects to this port directly. Its microphone is sent over
+the authenticated HTTPS camera gateway, which resamples and forwards PCM.
+
+The helper is installed as `/var/tmp/sd/talkd`; `install.ps1` derives its
+authentication secret from the existing gateway token, transfers the binary
+inside the LAN, starts it, and verifies port 23457. No camera credential is
+written to the repository.
+
+Build target: MIPS32 little-endian with the RTS3903N toolchain and tinyalsa
+(`pcm.c`, `pcm_hw.c`, `limits.c`, `snd_card_plugin.c`, `-ldl -lpthread`).

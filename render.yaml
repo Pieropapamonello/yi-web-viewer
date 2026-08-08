@@ -21,7 +21,7 @@ services:
         value: strict-origin-when-cross-origin
       - path: /*
         name: Permissions-Policy
-        value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+        value: "camera=(), microphone=(self), geolocation=(), payment=(), usb=()"
       - path: /service-worker.js
         name: Cache-Control
         value: "no-cache, no-store, must-revalidate"

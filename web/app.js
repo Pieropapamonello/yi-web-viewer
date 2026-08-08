@@ -51,6 +51,8 @@
   let aiReady = false;
   let personDetector = null;
   let personDetectorPromise = null;
+  let notificationDetectionBusy = false;
+  let notificationCooldownUntil = 0;
   let trackingEnabled = false;
   let trackingStarting = false;
   let trackingTimer = 0;
@@ -62,6 +64,12 @@
   let trackingLastVideoTime = -1;
   const healthByCamera = new Map();
   let streamConnectStarted = 0;
+  let talkStream = null;
+  let talkContext = null;
+  let talkProcessor = null;
+  let talkSamples = [];
+  let talkQueue = Promise.resolve();
+  let talking = false;
 
   function safeJson(value, fallback) {
     try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
@@ -270,9 +278,48 @@
 
   function applyOrientation(camera = currentCamera()) {
     const rotated = camera?.rotation === 180;
-    player.classList.toggle('rotated', rotated);
+    const zoom = Math.min(4, Math.max(1, Number(camera?.digitalZoom) || 1));
+    player.classList.remove('rotated');
+    player.style.transform = `${rotated ? 'rotate(180deg) ' : ''}scale(${zoom})`;
+    $('zoomReset').textContent = `${zoom.toFixed(zoom % 1 ? 1 : 0)}x`;
     $('orientationState').textContent = rotated ? 'Ruotata 180°' : 'Normale';
     $('rotateButton').classList.toggle('active', rotated);
+  }
+
+  async function setDigitalZoom(value) {
+    const camera = currentCamera(); if (!camera) return;
+    camera.digitalZoom = Math.min(4, Math.max(1, Math.round(Number(value) * 4) / 4));
+    applyOrientation(camera);
+    try { await persistCameras(); } catch (error) { toast(error.message, 'error'); }
+  }
+
+  function updateNotificationControls(camera = currentCamera()) {
+    const enabled = Boolean(camera?.notificationsEnabled);
+    $('notificationMaster').classList.toggle('active', enabled);
+    $('notificationMaster').setAttribute('aria-pressed', String(enabled));
+    $('notificationMaster').textContent = enabled ? 'Disattiva' : 'Attiva';
+    $('notifyPerson').checked = camera?.notifyPerson !== false;
+    $('notifyAnimal').checked = camera?.notifyAnimal !== false;
+    $('notifyVehicle').checked = camera?.notifyVehicle !== false;
+    $('notificationHint').textContent = enabled ? 'Monitoraggio attivo: gli avvisi selezionati sono abilitati.' : 'Gli avvisi di questa camera sono disattivati.';
+  }
+
+  async function toggleNotifications() {
+    const camera = currentCamera(); if (!camera) return;
+    if (!camera.notificationsEnabled && 'Notification' in window && Notification.permission !== 'granted') {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') return toast('Autorizza le notifiche nelle impostazioni del browser.', 'error');
+    }
+    camera.notificationsEnabled = !camera.notificationsEnabled;
+    updateNotificationControls(camera);
+    try { await persistCameras(); toast(camera.notificationsEnabled ? 'Notifiche intelligenti attivate.' : 'Notifiche disattivate.', 'success'); }
+    catch (error) { camera.notificationsEnabled = !camera.notificationsEnabled; updateNotificationControls(camera); toast(error.message, 'error'); }
+  }
+
+  async function saveNotificationTypes() {
+    const camera = currentCamera(); if (!camera) return;
+    camera.notifyPerson = $('notifyPerson').checked; camera.notifyAnimal = $('notifyAnimal').checked; camera.notifyVehicle = $('notifyVehicle').checked;
+    try { await persistCameras(); } catch (error) { toast(error.message, 'error'); }
   }
 
   async function toggleOrientation() {
@@ -310,14 +357,62 @@
 
   async function loadCapabilities(camera) {
     $('capabilityState').textContent = 'Verifica…';
+    $('talkFeature').disabled = true;
+    $('talkFeature').querySelector('small').textContent = 'Verifica gateway';
     if (!camera?.apiBaseUrl || !camera.apiToken) { $('capabilityState').textContent = 'Locale'; return; }
     try {
       const response = await fetch(`${camera.apiBaseUrl.replace(/\/$/, '')}/api/capabilities`, { cache:'no-store', headers:{ Authorization:`Bearer ${camera.apiToken}` } });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Gateway non raggiungibile');
       $('capabilityState').textContent = result.protocol === 'ipc365-local' ? 'IPC365' : 'Gateway';
-      $('capabilityHint').textContent = 'Live, audio, PTZ, snapshot e registrazione locale disponibili. Talk, luce, guardia e playback richiedono una nuova cattura.';
+      $('talkFeature').disabled = !result.features?.talk;
+      $('talkFeature').querySelector('small').textContent = result.features?.talk ? 'Tieni premuto per parlare' : 'Non disponibile';
+      $('capabilityHint').textContent = result.features?.talk ? 'Live, audio, PTZ, snapshot, registrazione e audio bidirezionale disponibili.' : 'Live, PTZ, snapshot e registrazione disponibili. Il microfono dipende dal driver della camera.';
     } catch { $('capabilityState').textContent = 'Non verificato'; }
+  }
+
+  function encodePcm(samples) {
+    const bytes = new Uint8Array(samples.length * 2); const view = new DataView(bytes.buffer);
+    samples.forEach((sample, index) => view.setInt16(index * 2, Math.max(-32768, Math.min(32767, sample)), true));
+    let binary = ''; for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    return btoa(binary);
+  }
+
+  function sendTalk(action, pcm = '') {
+    const camera = currentCamera();
+    if (!camera?.apiBaseUrl || !camera.apiToken) return Promise.reject(new Error('Gateway audio non configurato.'));
+    return fetch(`${camera.apiBaseUrl.replace(/\/$/, '')}/api/talk`, { method:'POST', cache:'no-store', headers:{ 'Content-Type':'application/json', Authorization:`Bearer ${camera.apiToken}` }, body:JSON.stringify({ action, ...(pcm ? { pcm } : {}) }) }).then(async (response) => {
+      const result = await response.json().catch(() => ({})); if (!response.ok) throw new Error(result.detail || result.error || 'Audio rifiutato'); return result;
+    });
+  }
+
+  async function startTalking(event) {
+    event?.preventDefault(); if (talking || $('talkFeature').disabled) return;
+    try {
+      talkStream = await navigator.mediaDevices.getUserMedia({ audio:{ channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
+      await sendTalk('start');
+      talkContext = new AudioContext({ latencyHint:'interactive' });
+      const source = talkContext.createMediaStreamSource(talkStream);
+      talkProcessor = talkContext.createScriptProcessor(2048, 1, 1);
+      const inputRate = talkContext.sampleRate; talkSamples = []; talking = true;
+      talkProcessor.onaudioprocess = (audioEvent) => {
+        if (!talking) return;
+        const input = audioEvent.inputBuffer.getChannelData(0); const ratio = inputRate / 8000;
+        for (let outputIndex = 0; outputIndex < input.length / ratio; outputIndex += 1) talkSamples.push(Math.round(input[Math.min(input.length - 1, Math.floor(outputIndex * ratio))] * 32767));
+        const count = Math.floor(talkSamples.length / 320) * 320;
+        if (count >= 320) { const packet = talkSamples.splice(0, count); talkQueue = talkQueue.then(() => sendTalk('data', encodePcm(packet))).catch((error) => toast(error.message, 'error')); }
+      };
+      source.connect(talkProcessor); talkProcessor.connect(talkContext.destination);
+      $('talkFeature').classList.add('active'); $('talkFeature').querySelector('small').textContent = 'Parla ora...'; navigator.vibrate?.(20);
+    } catch (error) { stopTalking(); toast(`Microfono: ${error.message}`, 'error'); }
+  }
+
+  async function stopTalking() {
+    const wasTalking = talking; talking = false;
+    talkProcessor?.disconnect(); talkProcessor = null; talkStream?.getTracks().forEach((track) => track.stop()); talkStream = null;
+    if (talkContext) { await talkContext.close().catch(() => {}); talkContext = null; }
+    $('talkFeature').classList.remove('active'); if (!$('talkFeature').disabled) $('talkFeature').querySelector('small').textContent = 'Tieni premuto per parlare';
+    if (wasTalking) talkQueue = talkQueue.then(() => sendTalk('stop')).catch(() => {});
   }
 
   async function loadAiStatus() {
@@ -383,7 +478,8 @@
       const files = await mediaPipe.FilesetResolver.forVisionTasks(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${version}/wasm`);
       const options = {
         baseOptions:{ modelAssetPath:'https://storage.googleapis.com/mediapipe-tasks/object_detector/efficientdet_lite0_uint8.tflite', delegate:'GPU' },
-        runningMode:'VIDEO', maxResults:5, scoreThreshold:.52, categoryAllowlist:['person'],
+        runningMode:'VIDEO', maxResults:8, scoreThreshold:.48,
+        categoryAllowlist:['person', 'cat', 'dog', 'bird', 'horse', 'sheep', 'cow', 'bear', 'elephant', 'zebra', 'giraffe', 'car', 'motorcycle', 'bus', 'truck'],
       };
       try { personDetector = await mediaPipe.ObjectDetector.createFromOptions(files, options); }
       catch { personDetector = await mediaPipe.ObjectDetector.createFromOptions(files, { ...options, baseOptions:{ ...options.baseOptions, delegate:'CPU' } }); }
@@ -395,6 +491,33 @@
   function trackingAvailable() {
     const camera = currentCamera();
     return Boolean(camera?.ptz && camera.apiBaseUrl && camera.apiToken && ['WebRTC', 'HLS'].includes(liveTransport) && !archivePlayback && !player.paused && player.readyState >= 2);
+  }
+
+  function detectionKind(category) {
+    if (category === 'person') return 'person';
+    if (['cat','dog','bird','horse','sheep','cow','bear','elephant','zebra','giraffe'].includes(category)) return 'animal';
+    if (['car','motorcycle','bus','truck'].includes(category)) return 'vehicle';
+    return '';
+  }
+
+  async function notifyDetectedObjects() {
+    const camera = currentCamera();
+    if (!camera?.notificationsEnabled || notificationDetectionBusy || Date.now() < notificationCooldownUntil || player.readyState < 2) return;
+    notificationDetectionBusy = true;
+    try {
+      const detector = await loadPersonDetector();
+      const result = detector.detectForVideo(player, performance.now());
+      const found = new Set((result?.detections || []).filter((item) => Number(item.categories?.[0]?.score || 0) >= .55).map((item) => detectionKind(item.categories?.[0]?.categoryName || '')).filter(Boolean));
+      const selected = [...found].filter((kind) => kind === 'person' ? camera.notifyPerson !== false : kind === 'animal' ? camera.notifyAnimal !== false : camera.notifyVehicle !== false);
+      if (!selected.length) return;
+      notificationCooldownUntil = Date.now() + 30000;
+      const labels = { person:'persona', animal:'animale', vehicle:'veicolo' };
+      const detail = selected.map((kind) => labels[kind]).join(', ');
+      recordActivity('motion', 'Rilevamento intelligente', `${camera.name}: ${detail}.`);
+      const registration = await navigator.serviceWorker?.ready;
+      if (registration && Notification.permission === 'granted') await registration.showNotification(`${camera.name}: rilevamento`, { body:`Rilevato: ${detail}`, icon:'./icon.svg', tag:`camera-${camera.id}`, renotify:true, data:{ cameraId:camera.id } });
+    } catch (error) { console.warn('Rilevamento notifiche non disponibile:', error); }
+    finally { notificationDetectionBusy = false; }
   }
 
   function updateTrackingAvailability() {
@@ -452,7 +575,7 @@
 
   function normalizedPeople(result) {
     const width = player.videoWidth || 1; const height = player.videoHeight || 1;
-    return (result?.detections || []).map((detection) => {
+    return (result?.detections || []).filter((detection) => detection.categories?.[0]?.categoryName === 'person').map((detection) => {
       const box = detection.boundingBox || {}; const category = detection.categories?.[0] || {};
       const x = Math.max(0, Number(box.originX || 0) / width); const y = Math.max(0, Number(box.originY || 0) / height);
       const w = Math.min(1 - x, Math.max(0, Number(box.width || 0) / width)); const h = Math.min(1 - y, Math.max(0, Number(box.height || 0) / height));
@@ -693,6 +816,7 @@
     document.querySelectorAll('[data-ptz]').forEach((button) => { button.disabled = !ptzReady; });
     updateTrackingAvailability();
     applyOrientation(camera);
+    updateNotificationControls(camera);
     loadCapabilities(camera);
     loadRecordings(camera.id);
     loadArchive(camera.id);
@@ -1021,7 +1145,7 @@
 
   function openCameraDialog(id = '') {
     editingId = id;
-    const camera = cameras.find((item) => item.id === id) || { name:'', model:'', location:'', notes:'', favorite:false, webrtcUrl:'', streamUrl:'', streamLowUrl:'', streamUsername:'', streamPassword:'', apiBaseUrl:'', apiToken:'', ptz:false, motionDetection:true };
+    const camera = cameras.find((item) => item.id === id) || { name:'', model:'', location:'', notes:'', favorite:false, webrtcUrl:'', streamUrl:'', streamLowUrl:'', streamUsername:'', streamPassword:'', apiBaseUrl:'', apiToken:'', ptz:false, motionDetection:true, digitalZoom:1, notificationsEnabled:false, notifyPerson:true, notifyAnimal:true, notifyVehicle:true };
     $('settingsTitle').textContent = id ? `Modifica ${camera.name}` : 'Aggiungi camera';
     $('nameInput').value = camera.name; $('modelInput').value = camera.model || ''; $('locationInput').value = camera.location || ''; $('notesInput').value = camera.notes || ''; $('favoriteInput').checked = Boolean(camera.favorite);
     $('motionInput').checked = camera.motionDetection !== false;
@@ -1052,6 +1176,11 @@
       streamUsername:$('streamUsernameInput').value.trim(), streamPassword:$('streamPasswordInput').value,
       apiBaseUrl:$('ptzInput').checked ? $('apiInput').value.trim() : '', apiToken:$('ptzInput').checked ? $('apiTokenInput').value : '', ptz:$('ptzInput').checked,
       rotation:previous?.rotation === 180 ? 180 : 0,
+      digitalZoom:previous?.digitalZoom || 1,
+      notificationsEnabled:Boolean(previous?.notificationsEnabled),
+      notifyPerson:previous?.notifyPerson !== false,
+      notifyAnimal:previous?.notifyAnimal !== false,
+      notifyVehicle:previous?.notifyVehicle !== false,
     };
     const backup = [...cameras];
     const index = cameras.findIndex((item) => item.id === camera.id);
@@ -1226,6 +1355,7 @@
             motionCooldownUntil = Date.now() + 20000;
             const camera = currentCamera();
             if (camera) recordActivity('motion', 'Movimento rilevato', `${camera.name}: variazione dell'immagine ${Math.round(ratio * 100)}%.`);
+            notifyDetectedObjects();
           }
         }
         previousMotionFrame = new Uint8ClampedArray(current);
@@ -1533,9 +1663,17 @@
     $('trackingToggle').addEventListener('click', togglePersonTracking);
     $('trackingSensitivity').addEventListener('change', () => trackingEnabled && toast('Sensibilità inseguimento aggiornata.', 'success'));
     $('muteButton').addEventListener('click', () => { player.muted = !player.muted; $('muteButton').classList.toggle('unmuted', !player.muted); });
+    $('zoomOut').addEventListener('click', () => setDigitalZoom((currentCamera()?.digitalZoom || 1) - .25));
+    $('zoomReset').addEventListener('click', () => setDigitalZoom(1));
+    $('zoomIn').addEventListener('click', () => setDigitalZoom((currentCamera()?.digitalZoom || 1) + .25));
+    $('stage').addEventListener('wheel', (event) => { if (!$('stage').classList.contains('playing')) return; event.preventDefault(); setDigitalZoom((currentCamera()?.digitalZoom || 1) + (event.deltaY < 0 ? .25 : -.25)); }, { passive:false });
+    $('notificationMaster').addEventListener('click', toggleNotifications);
+    ['notifyPerson','notifyAnimal','notifyVehicle'].forEach((id) => $(id).addEventListener('change', saveNotificationTypes));
     $('fullButton').addEventListener('click', () => $('stage').requestFullscreen?.());
     $('rotateButton').addEventListener('click', toggleOrientation); $('orientationFeature').addEventListener('click', toggleOrientation);
     $('shareCamera').addEventListener('click', shareCurrentCamera);
+    $('talkFeature').addEventListener('pointerdown', startTalking);
+    ['pointerup','pointercancel','pointerleave'].forEach((name) => $('talkFeature').addEventListener(name, stopTalking));
     $('favoriteCurrent').addEventListener('click', toggleFavorite);
     $('favoriteFilter').addEventListener('click', () => { preferences.favoritesOnly = !preferences.favoritesOnly; renderStats(); renderSwitcher(); renderGrid(); persistPreferences(); });
     $('cameraSort').addEventListener('change', () => { preferences.cameraSort = $('cameraSort').value; renderSwitcher(); renderGrid(); persistPreferences(); });

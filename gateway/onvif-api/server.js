@@ -60,6 +60,78 @@ if (!AUTH_READY) {
 let cameraPromise;
 const pendingDropbox = new Map();
 const aiUsage = new Map();
+let ipcTalkSocket = null;
+let ipcTalkSequence = 1;
+let frediTalkSocket = null;
+const FREDI_TALK_PORT = Number(process.env.FREDI_TALK_PORT || 23457);
+const FREDI_TALK_SECRET = crypto.createHmac('sha256', API_TOKEN).update('fredi-talk-v1').digest('hex');
+
+function linearToAlaw(sample) {
+  let value = Math.max(-32768, Math.min(32767, sample));
+  const sign = value < 0 ? 0x00 : 0x80;
+  if (value < 0) value = -value - 1;
+  value = Math.min(value, 32635);
+  let exponent = 7;
+  for (let mask = 0x4000; exponent > 0 && !(value & mask); exponent -= 1, mask >>= 1) { /* locate segment */ }
+  const mantissa = exponent === 0 ? (value >> 4) & 0x0f : (value >> (exponent + 3)) & 0x0f;
+  return (sign | (exponent << 4) | mantissa) ^ 0x55;
+}
+
+function ipcTalkFrame(pcm) {
+  const frame = Buffer.alloc(352);
+  frame.set([0xcc,0xdd,0xee,0xff], 0);
+  frame.writeUInt32LE(0x9c57, 4);
+  frame.set([0xe4,0x12,0x69,0x00], 8);
+  frame.writeUInt32LE(frame.length, 12);
+  frame.writeUInt32LE(0x29, 20);
+  ipc365Id(IPC365_SOURCE_ID, 'IPC365_SOURCE_ID').copy(frame, 24);
+  frame.writeUInt32LE(ipcTalkSequence++ >>> 0, 28);
+  for (let index = 0; index < 320; index += 1) frame[32 + index] = linearToAlaw(pcm.readInt16LE(index * 2));
+  return frame;
+}
+
+function startIpcTalk() {
+  if (ipcTalkSocket && !ipcTalkSocket.destroyed) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host:HOST, port:IPC365_PTZ_PORT });
+    const timeout = setTimeout(() => { socket.destroy(); reject(new Error('IPC365 talk connection timeout')); }, 5000);
+    socket.once('connect', () => { clearTimeout(timeout); ipcTalkSocket = socket; resolve(); });
+    socket.once('error', (error) => { clearTimeout(timeout); if (ipcTalkSocket === socket) ipcTalkSocket = null; reject(error); });
+    socket.on('close', () => { if (ipcTalkSocket === socket) ipcTalkSocket = null; });
+  });
+}
+
+async function writeIpcTalk(encoded) {
+  const pcm = Buffer.from(encoded || '', 'base64');
+  if (!pcm.length || pcm.length > 128000 || pcm.length % 640) throw new Error('Talk audio must contain 40 ms PCM frames');
+  await startIpcTalk();
+  for (let offset = 0; offset < pcm.length; offset += 640) ipcTalkSocket.write(ipcTalkFrame(pcm.subarray(offset, offset + 640)));
+}
+
+function stopIpcTalk() {
+  ipcTalkSocket?.end(); ipcTalkSocket = null;
+}
+
+function startFrediTalk() {
+  if (frediTalkSocket && !frediTalkSocket.destroyed) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host:FREDI_PTZ_HOST, port:FREDI_TALK_PORT });
+    const timeout = setTimeout(() => { socket.destroy(); reject(new Error('FREDI audio driver not reachable')); }, 5000);
+    socket.once('connect', () => { clearTimeout(timeout); socket.write(`${FREDI_TALK_SECRET}\n`); frediTalkSocket = socket; resolve(); });
+    socket.once('error', (error) => { clearTimeout(timeout); if (frediTalkSocket === socket) frediTalkSocket = null; reject(error); });
+    socket.on('close', () => { if (frediTalkSocket === socket) frediTalkSocket = null; });
+  });
+}
+
+async function writeFrediTalk(encoded) {
+  const pcm = Buffer.from(encoded || '', 'base64');
+  if (!pcm.length || pcm.length > 128000 || pcm.length % 2) throw new Error('Invalid FREDI PCM audio');
+  await startFrediTalk(); frediTalkSocket.write(pcm);
+}
+
+function stopFrediTalk() {
+  frediTalkSocket?.end(); frediTalkSocket = null;
+}
 
 function connectCamera() {
   if (!cameraPromise) {
@@ -425,6 +497,11 @@ function cleanCameras(value) {
       ptz: camera?.ptz !== false,
       rotation: camera?.rotation === 180 ? 180 : 0,
       motionDetection: camera?.motionDetection !== false,
+      digitalZoom: Math.min(4, Math.max(1, Number(camera?.digitalZoom) || 1)),
+      notificationsEnabled: Boolean(camera?.notificationsEnabled),
+      notifyPerson: camera?.notifyPerson !== false,
+      notifyAnimal: camera?.notifyAnimal !== false,
+      notifyVehicle: camera?.notifyVehicle !== false,
       archiveKey: cleanText(camera?.archiveKey, 64).replace(/[^a-zA-Z0-9_-]/g, ''),
     };
   });
@@ -1152,11 +1229,18 @@ const server = http.createServer(async (request, response) => {
       console.log(`FREDI PTZ ${body.action} step ${step} completed in ${result.durationMs}ms`);
       return send(response, 200, { ok:true, action:body.action, step, ...result }, headers);
     }
+    if (pathname === '/fredi/api/talk' && request.method === 'POST') {
+      if (body.action === 'start') await startFrediTalk();
+      else if (body.action === 'data') await writeFrediTalk(body.pcm);
+      else if (body.action === 'stop') stopFrediTalk();
+      else return send(response, 400, { error:'Unsupported talk action' }, headers);
+      return send(response, 200, { ok:true, action:body.action }, headers);
+    }
     if (pathname === '/fredi/api/capabilities' && request.method === 'GET') {
       return send(response, 200, {
         ok:true,
         protocol:'rts3903n-telnet',
-        features:{ liveVideo:true, liveAudio:false, ptz:true, snapshot:true, localRecording:true, orientation:true, light:false, guard:false, talk:false, sdPlayback:false, cloudPlayback:false },
+        features:{ liveVideo:true, liveAudio:false, ptz:true, snapshot:true, localRecording:true, orientation:true, light:false, guard:false, talk:true, sdPlayback:false, cloudPlayback:false },
       }, headers);
     }
     if (pathname === '/api/ptz' && request.method === 'POST') {
@@ -1165,6 +1249,13 @@ const server = http.createServer(async (request, response) => {
       await move(body.action, step, durationMs);
       console.log(`PTZ ${body.action} step ${step} completed in ${durationMs}ms`);
       return send(response, 200, { ok: true, action: body.action, step, durationMs }, headers);
+    }
+    if (pathname === '/api/talk' && request.method === 'POST') {
+      if (body.action === 'start') await startIpcTalk();
+      else if (body.action === 'data') await writeIpcTalk(body.pcm);
+      else if (body.action === 'stop') stopIpcTalk();
+      else return send(response, 400, { error:'Unsupported talk action' }, headers);
+      return send(response, 200, { ok:true, action:body.action }, headers);
     }
     if (pathname === '/api/capabilities' && request.method === 'GET') {
       return send(response, 200, {
@@ -1179,7 +1270,7 @@ const server = http.createServer(async (request, response) => {
           orientation:true,
           light:false,
           guard:false,
-          talk:false,
+          talk:true,
           sdPlayback:false,
           cloudPlayback:false,
         },
