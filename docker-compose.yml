@@ -155,6 +155,110 @@ services:
     networks:
       - proxy-net
 
+  # FREDI G1 custom-firmware RTSP stream and its browser profiles.
+  fredi-g1-bridge:
+    image: lscr.io/linuxserver/ffmpeg:latest
+    container_name: fredi-g1-bridge
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
+    command:
+      - -hide_banner
+      - -loglevel
+      - warning
+      - -rtsp_transport
+      - tcp
+      - -i
+      - ${FREDI_G1_RTSP_URL:?Set FREDI_G1_RTSP_URL in .env before starting Docker}
+      - -map
+      - 0:v:0
+      - -an
+      - -c:v
+      - copy
+      - -f
+      - rtsp
+      - -rtsp_transport
+      - tcp
+      - rtsp://camera-mediamtx:8554/yi
+    networks:
+      - proxy-net
+
+  fredi-g1-bridge-low:
+    image: lscr.io/linuxserver/ffmpeg:latest
+    container_name: fredi-g1-bridge-low
+    restart: unless-stopped
+    depends_on:
+      - fredi-g1-bridge
+    environment:
+      TZ: Europe/Rome
+    command:
+      - -hide_banner
+      - -loglevel
+      - warning
+      - -rtsp_transport
+      - tcp
+      - -i
+      - rtsp://camera-mediamtx:8554/yi
+      - -map
+      - 0:v:0
+      - -vf
+      - "scale=-2:480,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf:text=%{localtime}:fontcolor=white:fontsize=22:box=1:boxcolor=black@0.70:boxborderw=8:x=12:y=h-th-12"
+      - -c:v
+      - libx264
+      - -preset
+      - veryfast
+      - -tune
+      - zerolatency
+      - -b:v
+      - 700k
+      - -maxrate
+      - 850k
+      - -bufsize
+      - 1400k
+      - -g
+      - "40"
+      - -sc_threshold
+      - "0"
+      - -an
+      - -f
+      - rtsp
+      - -rtsp_transport
+      - tcp
+      - rtsp://camera-mediamtx:8554/yi-low
+    networks:
+      - proxy-net
+
+  fredi-g1-bridge-webrtc:
+    image: lscr.io/linuxserver/ffmpeg:latest
+    container_name: fredi-g1-bridge-webrtc
+    restart: unless-stopped
+    depends_on:
+      - fredi-g1-bridge
+    command:
+      - -hide_banner
+      - -loglevel
+      - warning
+      - -fflags
+      - nobuffer
+      - -flags
+      - low_delay
+      - -rtsp_transport
+      - tcp
+      - -i
+      - rtsp://camera-mediamtx:8554/yi
+      - -map
+      - 0:v:0
+      - -an
+      - -c:v
+      - copy
+      - -f
+      - rtsp
+      - -rtsp_transport
+      - tcp
+      - rtsp://camera-mediamtx:8554/yi-webrtc
+    networks:
+      - proxy-net
+
   # Continuous one-minute MP4 archive used by the searchable timeline.
   ipc365-recorder:
     image: lscr.io/linuxserver/ffmpeg:latest

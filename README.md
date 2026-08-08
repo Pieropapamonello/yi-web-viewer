@@ -54,6 +54,8 @@ Il live interattivo usa invece `http://localhost:8891/ipc365-webrtc/whep`: il pr
 
 Il servizio `ipc365-bridge-low` genera anche `http://localhost:8890/ipc365-low/index.m3u8` a 854x480. Il selettore qualità passa realmente tra questa sorgente e quella originale; non è un semplice controllo cosmetico.
 
+La FREDI G1 con firmware RTSP usa tre percorsi separati: `yi` (1080p), `yi-low` (480p) e `yi-webrtc` (WHEP). Con il proxy domestico configurato, gli URL della dashboard sono `https://camera.nelloonrender.duckdns.org/yi/index.m3u8` e `https://rtc.nelloonrender.duckdns.org/yi-webrtc/whep`.
+
 Il pulsante `Registra` crea una clip WebM con data e ora impresse nei fotogrammi e la invia, tramite sessione autenticata, alla cartella montata dal gateway su `/archive`. Nello stack locale questa cartella è `C:/mediaflow/registrazioni`. Se il gateway non è raggiungibile, il browser conserva una copia di emergenza in IndexedDB. `archive-retention` elimina i file più vecchi di `ARCHIVE_RETENTION_DAYS` (7 per impostazione predefinita). Il gateway genera link di riproduzione firmati, legati all'account e validi per dieci minuti, con supporto HTTP Range.
 
 La registrazione continua è disabilitata per impostazione predefinita. Il servizio opzionale `ipc365-recorder` appartiene al profilo Compose `continuous-recording` e viene avviato soltanto specificando esplicitamente `--profile continuous-recording`.

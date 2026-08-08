@@ -535,7 +535,9 @@
 
   function derivedLowStreamUrl(camera) {
     if (camera?.streamLowUrl) return camera.streamLowUrl;
-    return String(camera?.streamUrl || '').replace('/ipc365/', '/ipc365-low/');
+    return String(camera?.streamUrl || '')
+      .replace('/ipc365/', '/ipc365-low/')
+      .replace('/yi/', '/yi-low/');
   }
 
   function renderQualityLevels(camera = currentCamera()) {

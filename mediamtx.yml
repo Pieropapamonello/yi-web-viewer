@@ -28,6 +28,14 @@ paths:
     source: publisher
 
   yi:
-    # Reserved for the FREDI camera when its RTSP support is enabled.
+    # Original FREDI G1 1080p stream normalized by FFmpeg.
     source: publisher
     rtspTransport: tcp
+
+  yi-low:
+    # 480p mobile profile generated from the FREDI G1 stream.
+    source: publisher
+
+  yi-webrtc:
+    # Low-latency FREDI G1 profile exposed through WHEP.
+    source: publisher
