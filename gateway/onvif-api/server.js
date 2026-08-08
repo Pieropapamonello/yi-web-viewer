@@ -467,8 +467,8 @@ async function storeManualClip(request, targetPath) {
 function cloudStatus(vault) {
   const dropbox = vault.cloud?.dropbox || {};
   return {
-    dropbox:{ configured:Boolean(DROPBOX_APP_KEY), connected:Boolean(dropbox.refreshToken || dropbox.accessToken), autoBackup:Boolean(dropbox.autoBackup), account:dropbox.account || '', lastUpload:dropbox.lastUpload || '', lastError:dropbox.lastError || '' },
-    mega:{ configured:false, connected:false, detail:'Richiede il servizio MEGAcmd locale.' },
+    dropbox:{ configured:Boolean(DROPBOX_APP_KEY), connected:Boolean(dropbox.refreshToken || dropbox.accessToken), autoBackup:Boolean(dropbox.autoBackup), snapshotBackup:Boolean(dropbox.snapshotBackup), account:dropbox.account || '', lastUpload:dropbox.lastUpload || '', lastError:dropbox.lastError || '' },
+    mega:{ configured:false, connected:false, loginUrl:'https://mega.nz/login', detail:'Accesso web ed esportazione manuale. L upload automatico richiede MEGAcmd sul gateway.' },
   };
 }
 
@@ -490,12 +490,11 @@ async function validDropboxAccess(dropbox) {
   return dropbox.accessToken;
 }
 
-async function uploadToDropbox(vault, camera, filePath) {
+async function uploadContentToDropbox(vault, camera, fileName, content) {
   const dropbox = vault.cloud?.dropbox;
   if (!dropbox) throw new Error('Dropbox is not connected');
   const accessToken = await validDropboxAccess(dropbox);
-  const remoteName = `/FREDI Control/${String(camera.name || 'Camera').replace(/[\\/:?*<>|]/g, '-')}/${path.basename(filePath)}`;
-  const content = fs.readFileSync(filePath);
+  const remoteName = `/FREDI Control/${String(camera.name || 'Camera').replace(/[\\/:?*<>|]/g, '-')}/${path.basename(fileName)}`;
   const response = await fetch('https://content.dropboxapi.com/2/files/upload', {
     method:'POST',
     headers:{ Authorization:`Bearer ${accessToken}`, 'Content-Type':'application/octet-stream', 'Dropbox-API-Arg':JSON.stringify({ path:remoteName, mode:'overwrite', autorename:false, mute:true }) },
@@ -505,6 +504,10 @@ async function uploadToDropbox(vault, camera, filePath) {
   if (!response.ok) throw new Error(result.error_summary || `Dropbox upload ${response.status}`);
   dropbox.lastUpload = new Date().toISOString(); dropbox.lastError = '';
   return result;
+}
+
+async function uploadToDropbox(vault, camera, filePath) {
+  return uploadContentToDropbox(vault, camera, path.basename(filePath), fs.readFileSync(filePath));
 }
 
 let cloudBackupRunning = false;
@@ -520,7 +523,7 @@ async function runCloudBackups() {
       for (const camera of vault.cameras) {
         if (!cameraArchiveAuthorized(camera)) continue;
         const key = cameraArchiveKey(camera); if (!key) continue;
-        const candidate = fs.readdirSync(ARCHIVE_DIR).filter((name) => name.startsWith(`${key}_`) && name.endsWith('.mp4') && !uploaded.has(name)).sort().at(0);
+        const candidate = fs.readdirSync(ARCHIVE_DIR).filter((name) => name.startsWith(`${key}_`) && /\.(?:mp4|webm)$/i.test(name) && !uploaded.has(name)).sort().at(0);
         if (!candidate) continue;
         const filePath = path.join(ARCHIVE_DIR, candidate);
         if (Date.now() - fs.statSync(filePath).mtimeMs < 15_000) continue;
@@ -591,6 +594,20 @@ async function readJson(request, maximumBytes = 65_536) {
     chunks.push(chunk);
   }
   return length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+}
+
+async function readBinary(request, maximumBytes) {
+  const declared = Number(request.headers['content-length'] || 0);
+  if (declared > maximumBytes) throw new Error('Request body too large');
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of request) {
+    length += chunk.length;
+    if (length > maximumBytes) throw new Error('Request body too large');
+    chunks.push(chunk);
+  }
+  if (!length) throw new Error('Request body is empty');
+  return Buffer.concat(chunks);
 }
 
 function aiConfigured() {
@@ -749,7 +766,7 @@ const server = http.createServer(async (request, response) => {
       const account = data.users.find((item) => item.id === pending.accountId);
       if (!account) throw new Error('Account no longer exists');
       const vault = decryptVault(account); vault.cloud ||= {};
-      vault.cloud.dropbox = { accessToken:token.access_token, refreshToken:token.refresh_token || '', expiresAt:Date.now() + Number(token.expires_in || 14400) * 1000, account:profile.email || profile.name?.display_name || token.account_id || 'Dropbox', autoBackup:false, uploaded:[] };
+      vault.cloud.dropbox = { accessToken:token.access_token, refreshToken:token.refresh_token || '', expiresAt:Date.now() + Number(token.expires_in || 14400) * 1000, account:profile.email || profile.name?.display_name || token.account_id || 'Dropbox', autoBackup:false, snapshotBackup:false, uploaded:[] };
       vault.events.unshift(vaultEvent('success', 'Dropbox collegato', 'Il cloud è pronto per il backup delle registrazioni.'));
       account.vault = encryptVault(account.id, vault); saveAccounts(data);
       response.writeHead(302, { Location:`${DASHBOARD_URL}/?cloud=dropbox-connected` }); return response.end();
@@ -859,7 +876,8 @@ const server = http.createServer(async (request, response) => {
       const body = await readJson(request); const data = loadAccounts(); const account = accountFromSession(session, data);
       if (!account) return send(response, 401, { error:'Unauthorized' }, headers);
       const vault = decryptVault(account); if (!vault.cloud?.dropbox) return send(response, 409, { error:'Dropbox is not connected' }, headers);
-      vault.cloud.dropbox.autoBackup = Boolean(body.autoBackup);
+      if (Object.hasOwn(body, 'autoBackup')) vault.cloud.dropbox.autoBackup = Boolean(body.autoBackup);
+      if (Object.hasOwn(body, 'snapshotBackup')) vault.cloud.dropbox.snapshotBackup = Boolean(body.snapshotBackup);
       account.vault = encryptVault(account.id, vault); saveAccounts(data);
       return send(response, 200, { ok:true, ...cloudStatus(vault) }, headers);
     } catch (error) { return send(response, 400, { error:error.message }, headers); }
@@ -890,6 +908,33 @@ const server = http.createServer(async (request, response) => {
     } catch (error) {
       console.error(`Dropbox upload: ${error.message}`);
       return send(response, 502, { error:'Dropbox upload failed', detail:error.message }, headers);
+    }
+  }
+
+  if (pathname === '/api/cloud/dropbox/snapshot' && request.method === 'POST') {
+    if (!session) return send(response, 401, { error:'Unauthorized' }, headers);
+    try {
+      if (!String(request.headers['content-type'] || '').toLowerCase().startsWith('image/jpeg')) return send(response, 415, { error:'Only JPEG snapshots are accepted' }, headers);
+      const data = loadAccounts(); const account = accountFromSession(session, data);
+      if (!account) return send(response, 401, { error:'Unauthorized' }, headers);
+      const vault = decryptVault(account); const cameraId = cleanText(requestUrl.searchParams.get('cameraId'), 80);
+      const camera = vault.cameras.find((item) => item.id === cameraId);
+      if (!camera) return send(response, 404, { error:'Camera not found' }, headers);
+      if (!vault.cloud?.dropbox || (!vault.cloud.dropbox.refreshToken && !vault.cloud.dropbox.accessToken)) return send(response, 409, { error:'Dropbox is not connected' }, headers);
+      const stamp = cleanText(requestUrl.searchParams.get('stamp'), 19);
+      if (!/^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/.test(stamp)) return send(response, 400, { error:'Invalid snapshot timestamp' }, headers);
+      const content = await readBinary(request, 8_000_000);
+      const key = cameraArchiveKey(camera) || String(camera.name || 'camera').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'camera';
+      const fileName = `${key}_${stamp}_snapshot.jpg`;
+      const result = await uploadContentToDropbox(vault, camera, fileName, content);
+      vault.events.unshift(vaultEvent('success', 'Snapshot salvato su Dropbox', `${camera.name}: ${fileName}`));
+      vault.events = vault.events.slice(0, 100);
+      account.vault = encryptVault(account.id, vault); saveAccounts(data);
+      return send(response, 201, { ok:true, name:result.name, path:result.path_display, cloud:cloudStatus(vault) }, headers);
+    } catch (error) {
+      console.error(`Dropbox snapshot: ${error.message}`);
+      const tooLarge = error.message === 'Request body too large';
+      return send(response, tooLarge ? 413 : 502, { error:tooLarge ? error.message : 'Dropbox snapshot upload failed', detail:error.message }, headers);
     }
   }
 

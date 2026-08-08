@@ -134,6 +134,13 @@ body.compact .workspace { padding-top:22px; }.compact .stats-grid { margin:16px 
 .cloud-auto { cursor:pointer; }
 .cloud-auto>span { flex:1; }
 .cloud-auto input { accent-color:var(--primary); }
+.cloud-fragment { flex-wrap:wrap; }
+.cloud-fragment label { flex:1; min-width:110px; }
+.cloud-fragment b,.cloud-fragment small { display:block; }
+.cloud-fragment b { font-size:9px; }
+.cloud-fragment small,.cloud-note { color:var(--faint); font-size:8px; line-height:1.35; }
+.cloud-fragment select { min-height:32px; border:1px solid var(--line); border-radius:8px; padding:5px 8px; color:var(--text); background:var(--surface); font-size:9px; }
+.cloud-note { display:block; padding:1px 3px 4px; }
 .disabled-destination { opacity:.62; }
 .cloud-panel .button { width:100%; justify-content:center; }
 

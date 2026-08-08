@@ -28,6 +28,8 @@
   let recordingAnimation = 0;
   let recordingStream = null;
   let recordingStartedAt = 0;
+  let recordingDestination = 'local';
+  let recordingStopTimer = 0;
   let toastTimer = null;
   let deferredInstallPrompt = null;
   let draggedId = '';
@@ -997,9 +999,17 @@
     const canvas = document.createElement('canvas'); canvas.width = player.videoWidth; canvas.height = player.videoHeight;
     const capturedAt = new Date();
     drawStampedFrame(canvas, capturedAt, camera);
-    canvas.toBlob((blob) => {
+    canvas.toBlob(async (blob) => {
+      if (!blob) return toast('Impossibile creare lo snapshot.', 'error');
       const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${slug(camera.name)}-${fileTimestamp(capturedAt)}.jpg`; link.click();
-      setTimeout(() => URL.revokeObjectURL(link.href), 1000); $('snapshotState').textContent = capturedAt.toLocaleString('it-IT'); recordActivity('snapshot', 'Snapshot acquisito', `${camera.name}: immagine del ${capturedAt.toLocaleString('it-IT')} salvata sul dispositivo.`); toast('Snapshot con data e ora scaricato.', 'success');
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000); $('snapshotState').textContent = capturedAt.toLocaleString('it-IT'); recordActivity('snapshot', 'Snapshot acquisito', `${camera.name}: immagine del ${capturedAt.toLocaleString('it-IT')} salvata sul dispositivo.`);
+      if (cloud?.dropbox?.connected && cloud.dropbox.snapshotBackup) {
+        try {
+          const query = new URLSearchParams({ cameraId:camera.id, stamp:fileTimestamp(capturedAt) });
+          await gatewayFetch(`/api/cloud/dropbox/snapshot?${query}`, { method:'POST', headers:{ 'Content-Type':'image/jpeg' }, body:blob });
+          toast('Snapshot scaricato e salvato su Dropbox.', 'success');
+        } catch (error) { toast(`Snapshot locale salvato; Dropbox: ${error.message}`, 'error'); }
+      } else toast('Snapshot con data e ora scaricato.', 'success');
     }, 'image/jpeg', .92);
   }
 
@@ -1030,8 +1040,13 @@
   }
 
   function toggleRecording() {
-    if (!HTMLCanvasElement.prototype.captureStream || player.paused) return toast('Avvia il live in un browser compatibile prima di registrare.', 'error');
     if (mediaRecorder?.state === 'recording') { mediaRecorder.stop(); return; }
+    startRecording('local');
+  }
+
+  function startRecording(destination = 'local', maximumSeconds = 0) {
+    if (!HTMLCanvasElement.prototype.captureStream || player.paused) return toast('Avvia il live in un browser compatibile prima di registrare.', 'error');
+    if (mediaRecorder?.state === 'recording') return toast('È già in corso una registrazione.', 'error');
     try {
       const camera = currentCamera();
       const canvas = document.createElement('canvas'); canvas.width = player.videoWidth; canvas.height = player.videoHeight;
@@ -1041,20 +1056,27 @@
       const sourceStream = player.captureStream?.();
       sourceStream?.getAudioTracks().forEach((track) => recordingStream.addTrack(track.clone()));
       const preferredMime = MediaRecorder.isTypeSupported?.('video/webm;codecs=vp8,opus') ? 'video/webm;codecs=vp8,opus' : 'video/webm';
-      chunks = []; mediaRecorder = new MediaRecorder(recordingStream, { mimeType:preferredMime });
+      chunks = []; recordingDestination = destination; mediaRecorder = new MediaRecorder(recordingStream, { mimeType:preferredMime });
       mediaRecorder.ondataavailable = (event) => event.data.size && chunks.push(event.data);
-      mediaRecorder.onstart = () => { recordingStartedAt = Date.now(); $('recordButton').classList.add('recording'); $('recordButton').querySelector('span').textContent = 'Ferma'; };
+      mediaRecorder.onstart = () => {
+        recordingStartedAt = Date.now(); $('recordButton').classList.add('recording'); $('recordButton').querySelector('span').textContent = 'Ferma';
+        if (destination === 'dropbox') { $('cloudRecord').disabled = false; $('cloudRecord').textContent = 'Ferma frammento'; }
+        if (maximumSeconds > 0) recordingStopTimer = window.setTimeout(() => mediaRecorder?.state === 'recording' && mediaRecorder.stop(), maximumSeconds * 1000);
+      };
       mediaRecorder.onstop = () => {
-        const startedAt = recordingStartedAt || Date.now(); recordingStartedAt = 0;
+        const startedAt = recordingStartedAt || Date.now(); const completedDestination = recordingDestination; recordingStartedAt = 0; recordingDestination = 'local';
+        clearTimeout(recordingStopTimer); recordingStopTimer = 0;
         cancelAnimationFrame(recordingAnimation); recordingAnimation = 0;
         recordingStream?.getTracks().forEach((track) => track.stop()); recordingStream = null;
         $('recordButton').classList.remove('recording'); $('recordButton').querySelector('span').textContent = 'Registra';
-        addRecording(new Blob(chunks, { type:preferredMime }), camera, startedAt);
+        $('cloudRecord').textContent = 'Registra frammento su Dropbox'; $('cloudRecord').disabled = !cloud?.dropbox?.connected;
+        addRecording(new Blob(chunks, { type:preferredMime }), camera, startedAt, completedDestination);
       };
       mediaRecorder.start(1000);
     } catch {
       cancelAnimationFrame(recordingAnimation); recordingAnimation = 0;
       recordingStream?.getTracks().forEach((track) => track.stop()); recordingStream = null;
+      clearTimeout(recordingStopTimer); recordingStopTimer = 0; recordingDestination = 'local';
       toast('Registrazione non supportata dal browser.', 'error');
     }
   }
@@ -1109,13 +1131,18 @@
     return gatewayFetch(`/api/archive/manual?${query}`, { method:'POST', headers:{ 'Content-Type':'video/webm' }, body:blob });
   }
 
-  async function addRecording(blob, recordedCamera = currentCamera(), startedAt = Date.now()) {
+  async function addRecording(blob, recordedCamera = currentCamera(), startedAt = Date.now(), destination = 'local') {
     const camera = recordedCamera; if (!camera) return;
     try {
       const result = await uploadManualRecording(blob, camera, startedAt);
       await loadArchive(camera.id);
       recordActivity('clip', 'Registrazione manuale salvata', `${camera.name}: ${result.name} · ${formatBytes(result.size || blob.size)}.`);
-      toast('Clip salvata nella cartella registrazioni del gateway.', 'success');
+      if (destination === 'dropbox') {
+        try {
+          await gatewayFetch('/api/cloud/dropbox/upload', { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ cameraId:camera.id, name:result.name }) });
+          await loadCloudStatus(); toast('Frammento salvato nella cartella locale e su Dropbox.', 'success');
+        } catch (error) { toast(`Frammento locale salvato; Dropbox: ${error.message}`, 'error'); }
+      } else toast('Clip salvata nella cartella registrazioni del gateway.', 'success');
     } catch (gatewayError) {
       try {
         await saveRecording(blob, camera); await loadRecordings(camera.id); await updateStorageEstimate();
@@ -1131,8 +1158,10 @@
       const dropbox = cloud.dropbox || {};
       $('cloudState').textContent = dropbox.connected ? 'Dropbox attivo' : 'Locale';
       $('dropboxState').textContent = dropbox.connected ? `${dropbox.account || 'Account collegato'}${dropbox.lastError ? ' · errore backup' : ''}` : dropbox.configured ? 'Pronto per il collegamento' : 'App Dropbox da configurare';
-      $('dropboxConnect').textContent = dropbox.connected ? 'Scollega' : 'Collega';
+      $('dropboxConnect').textContent = dropbox.connected ? 'Scollega' : 'Collega account';
       $('dropboxAuto').disabled = !dropbox.connected; $('dropboxAuto').checked = Boolean(dropbox.autoBackup);
+      $('dropboxSnapshots').disabled = !dropbox.connected; $('dropboxSnapshots').checked = Boolean(dropbox.snapshotBackup);
+      $('cloudRecord').disabled = !dropbox.connected;
       $('uploadDropbox').disabled = !(dropbox.connected && selectedArchiveClip);
     } catch { $('cloudState').textContent = 'Non disponibile'; }
   }
@@ -1149,11 +1178,21 @@
     } catch (error) { toast(error.message === 'Dropbox app is not configured on the gateway' ? 'Configura DROPBOX_APP_KEY nel gateway prima di collegare Dropbox.' : error.message, 'error'); }
   }
 
-  async function setDropboxAuto() {
+  async function setDropboxSettings(changedInput) {
     try {
-      cloud = await gatewayFetch('/api/cloud/dropbox/settings', { method:'PUT', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ autoBackup:$('dropboxAuto').checked }) });
-      await loadCloudStatus(); toast($('dropboxAuto').checked ? 'Backup Dropbox automatico attivato.' : 'Backup automatico disattivato.', 'success');
-    } catch (error) { $('dropboxAuto').checked = !$('dropboxAuto').checked; toast(error.message, 'error'); }
+      cloud = await gatewayFetch('/api/cloud/dropbox/settings', { method:'PUT', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ autoBackup:$('dropboxAuto').checked, snapshotBackup:$('dropboxSnapshots').checked }) });
+      await loadCloudStatus(); toast('Preferenze Dropbox aggiornate.', 'success');
+    } catch (error) { changedInput.checked = !changedInput.checked; toast(error.message, 'error'); }
+  }
+
+  function recordDropboxFragment() {
+    if (mediaRecorder?.state === 'recording') {
+      if (recordingDestination === 'dropbox') mediaRecorder.stop();
+      else toast('Ferma prima la registrazione corrente.', 'error');
+      return;
+    }
+    if (!cloud?.dropbox?.connected) return toast('Collega prima il tuo account Dropbox.', 'error');
+    startRecording('dropbox', Number($('cloudFragmentDuration').value || 30));
   }
 
   async function uploadSelectedDropbox() {
@@ -1170,9 +1209,9 @@
     if (!selectedArchiveClip) return toast('Seleziona prima una clip nella timeline.', 'error');
     try {
       const response = await fetch(archiveUrl(selectedArchiveClip)); if (!response.ok) throw new Error('Clip non raggiungibile');
-      const blob = await response.blob(); const file = new File([blob], selectedArchiveClip.name, { type:'video/mp4' });
+      const blob = await response.blob(); const mime = selectedArchiveClip.name.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/mp4'; const file = new File([blob], selectedArchiveClip.name, { type:mime });
       if (navigator.canShare?.({ files:[file] })) await navigator.share({ title:'Registrazione FREDI Control', files:[file] });
-      else { const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000); }
+      else { const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000); toast('Clip scaricata. Apri MEGA e caricala nel tuo account.', 'success'); }
     } catch (error) { if (error.name !== 'AbortError') toast(error.message, 'error'); }
   }
 
@@ -1270,7 +1309,9 @@
     $('returnLive').addEventListener('click', returnToLive);
     $('cloudSource').addEventListener('click', () => document.querySelector('.cloud-panel').scrollIntoView({ behavior:'smooth', block:'center' }));
     $('dropboxConnect').addEventListener('click', toggleDropboxConnection);
-    $('dropboxAuto').addEventListener('change', setDropboxAuto);
+    $('dropboxAuto').addEventListener('change', () => setDropboxSettings($('dropboxAuto')));
+    $('dropboxSnapshots').addEventListener('change', () => setDropboxSettings($('dropboxSnapshots')));
+    $('cloudRecord').addEventListener('click', recordDropboxFragment);
     $('uploadDropbox').addEventListener('click', uploadSelectedDropbox);
     $('exportClip').addEventListener('click', exportSelectedClip);
     $('stage').addEventListener('pointerdown', beginGesture);

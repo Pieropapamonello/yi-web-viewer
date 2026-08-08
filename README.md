@@ -74,9 +74,9 @@ DROPBOX_REDIRECT_URI=https://control.nelloonrender.duckdns.org/api/cloud/dropbox
 DASHBOARD_URL=https://yi-web-viewer.onrender.com
 ```
 
-Dopo il riavvio del gateway ogni utente può collegare il proprio Dropbox via OAuth. Access token, refresh token, impostazioni e storico upload vengono cifrati nel vault. Il backup automatico controlla ogni minuto le clip chiuse e le carica in `/FREDI Control/NOME CAMERA/`.
+Dopo il riavvio del gateway ogni utente può collegare il proprio Dropbox via OAuth. Access token, refresh token, impostazioni e storico upload vengono cifrati nel vault. Il backup opzionale controlla ogni minuto le clip MP4/WebM chiuse e le carica in `/FREDI Control/NOME CAMERA/`. Ogni utente può inoltre attivare gli snapshot cloud e registrare volontariamente frammenti live da 15 secondi a 2 minuti; la registrazione continua non viene avviata automaticamente.
 
-Per MEGA la web app usa l'esportazione sicura del dispositivo: sui telefoni apre il pannello Condividi, dal quale è possibile scegliere l'app MEGA; sui desktop scarica il file MP4. Un backup MEGA completamente automatico richiede un'istanza MEGAcmd locale autenticata. Non viene usata un'immagine Docker non ufficiale.
+Per MEGA la web app apre il login ufficiale in una scheda separata e usa l'esportazione sicura del dispositivo: sui telefoni apre il pannello Condividi, dal quale è possibile scegliere l'app MEGA; sui desktop scarica il file MP4/WebM. La sessione MEGA resta nel browser e la password non passa dalla web app. Un backup MEGA completamente automatico richiede un'istanza MEGAcmd locale autenticata. Non viene usata un'immagine Docker non ufficiale.
 
 La microSD interna della camera non è equivalente al volume Docker: il firmware IPC365 usa un protocollo TF proprietario. La UI la indica correttamente come non disponibile finché una cattura PCAP di apertura timeline, selezione orario e playback nell'app ufficiale non documenta quei comandi.
 
