@@ -473,7 +473,7 @@
     const authorization = camera.streamUsername && camera.streamPassword ? `Basic ${btoa(`${camera.streamUsername}:${camera.streamPassword}`)}` : '';
     const sourceUrl = selectedQuality === 'low' ? derivedLowStreamUrl(camera) : camera.streamUrl;
     if (window.Hls && Hls.isSupported()) {
-      hls = new Hls({ lowLatencyMode:true, liveSyncDurationCount:2, backBufferLength:10, xhrSetup:(xhr) => { if (authorization) xhr.setRequestHeader('Authorization', authorization); } });
+      hls = new Hls({ lowLatencyMode:true, liveSyncDurationCount:1, liveMaxLatencyDurationCount:2, maxLiveSyncPlaybackRate:2, maxBufferLength:2, maxMaxBufferLength:4, backBufferLength:3, xhrSetup:(xhr) => { if (authorization) xhr.setRequestHeader('Authorization', authorization); } });
       hls.loadSource(sourceUrl); hls.attachMedia(player);
       hls.on(Hls.Events.MANIFEST_PARSED, () => { renderQualityLevels(camera); player.play().catch(() => { setVideoLoading(false); toast('Tocca il video per avviare il live.'); }); });
       hls.on(Hls.Events.ERROR, (_, data) => { if (data.fatal) { healthByCamera.set(camera.id, { ok:false, latency:0, checkedAt:Date.now() }); updateFocusedCameraStatus(camera); setVideoLoading(false); offline('Live non raggiungibile.', 'Controlla URL, CORS e credenziali HLS.'); } });
@@ -653,16 +653,21 @@
     if (!camera?.ptz || !camera.apiBaseUrl || !camera.apiToken) return toast('PTZ non configurato per questa camera.', 'error');
     try {
       suppressMotionUntil = Date.now() + 6000;
-      const response = await fetch(`${camera.apiBaseUrl.replace(/\/$/, '')}/api/ptz`, { method:'POST', cache:'no-store', headers:{ 'Content-Type':'application/json', Authorization:`Bearer ${camera.apiToken}` }, body:JSON.stringify({ action, step }) });
+      navigator.vibrate?.(18);
+      snapToLiveEdge();
+      [150, 450, 900, 1600].forEach((delay) => setTimeout(snapToLiveEdge, delay));
+      const response = await fetch(`${camera.apiBaseUrl.replace(/\/$/, '')}/api/ptz`, { method:'POST', cache:'no-store', keepalive:true, headers:{ 'Content-Type':'application/json', Authorization:`Bearer ${camera.apiToken}` }, body:JSON.stringify({ action, step }) });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.detail || result.error || 'Comando rifiutato.');
-      navigator.vibrate?.(25);
       toast(`Movimento ${action} · intensità ${result.step || step}.`, 'success');
-      [400, 1400, 2800].forEach((delay) => setTimeout(() => {
-        const liveEdge = Number(hls?.liveSyncPosition);
-        if (Number.isFinite(liveEdge) && Math.abs(player.currentTime - liveEdge) > 0.35) player.currentTime = liveEdge;
-      }, delay));
     } catch (error) { toast(error.message, 'error'); }
+  }
+
+  function snapToLiveEdge() {
+    const hlsEdge = Number(hls?.liveSyncPosition);
+    const bufferedEdge = player.buffered.length ? player.buffered.end(player.buffered.length - 1) - .08 : NaN;
+    const liveEdge = Number.isFinite(hlsEdge) ? hlsEdge : bufferedEdge;
+    if (Number.isFinite(liveEdge) && Math.abs(player.currentTime - liveEdge) > .22) player.currentTime = liveEdge;
   }
 
   function updateLiveClock() {
@@ -688,6 +693,18 @@
     if (distance < 34) return;
     const action = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
     const step = distance > 180 ? 22 : distance > 90 ? 12 : 6;
+    sendPtz(action, step);
+  }
+
+  function moveGesture(event) {
+    if (!gestureStart || event.pointerId !== gestureStart.pointerId) return;
+    const dx = event.clientX - gestureStart.x;
+    const dy = event.clientY - gestureStart.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance < 34) return;
+    const action = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+    const step = distance > 180 ? 22 : distance > 90 ? 12 : 6;
+    gestureStart = null; $('gestureHint').hidden = true;
     sendPtz(action, step);
   }
 
@@ -908,7 +925,7 @@
     $('saveSettings').addEventListener('click', saveCamera); $('deleteCamera').addEventListener('click', deleteCamera);
     $('testStreamSettings').addEventListener('click', async () => { setLoading(true, 'Verifica HLS…'); try { await testStreamValues($('streamInput').value.trim(), $('streamUsernameInput').value.trim(), $('streamPasswordInput').value); toast('Playlist HLS raggiungibile.', 'success'); } catch (error) { toast(error.name === 'AbortError' ? 'Verifica scaduta.' : error.message, 'error'); } finally { setLoading(false); } });
     $('testCurrent').addEventListener('click', testCurrentCamera); $('refreshButton').addEventListener('click', testCurrentCamera);
-    document.querySelectorAll('[data-ptz]').forEach((button) => button.addEventListener('click', () => sendPtz(button.dataset.ptz)));
+    document.querySelectorAll('[data-ptz]').forEach((button) => button.addEventListener('pointerdown', (event) => { event.preventDefault(); sendPtz(button.dataset.ptz); }));
     document.querySelectorAll('[data-ptz-step]').forEach((button) => button.addEventListener('click', () => { ptzStep = Number(button.dataset.ptzStep); document.querySelectorAll('[data-ptz-step]').forEach((item) => item.classList.toggle('active', item === button)); }));
     $('snapshotButton').addEventListener('click', snapshot); $('recordButton').addEventListener('click', toggleRecording);
     $('muteButton').addEventListener('click', () => { player.muted = !player.muted; $('muteButton').classList.toggle('unmuted', !player.muted); });
@@ -925,6 +942,7 @@
     });
     $('timelineDate').addEventListener('change', renderPlaybackTimeline);
     $('stage').addEventListener('pointerdown', beginGesture);
+    $('stage').addEventListener('pointermove', moveGesture);
     $('stage').addEventListener('pointerup', finishGesture);
     $('stage').addEventListener('pointercancel', () => { gestureStart = null; $('gestureHint').hidden = true; });
     $('recordingList').addEventListener('click', (event) => { const button = event.target.closest('[data-delete-recording]'); if (button) deleteRecording(button.dataset.deleteRecording); });
