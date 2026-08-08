@@ -15,3 +15,21 @@ written to the repository.
 
 Build target: MIPS32 little-endian with the RTS3903N toolchain and tinyalsa
 (`pcm.c`, `pcm_hw.c`, `limits.c`, `snd_card_plugin.c`, `-ldl -lpthread`).
+
+## Direct microSD recording
+
+`build-recorder.ps1` applies `stream-recording.patch` to the upstream grabber
+and builds both the recorder and `sdserver`. `install-recorder.ps1` keeps
+`stream.original` as rollback, installs the binaries, and reboots the camera.
+Recording is opt-in through `/var/tmp/sd/recording.enabled`; completed 60-second
+H.264 segments live in `/var/tmp/sd/recordings`, while `.partial` files are
+never exposed. The default rolling limit is 2 GiB.
+
+Rollback from Telnet, if ever needed:
+
+```sh
+cd /var/tmp/sd
+killall rRTSPServer; killall stream
+cp stream.original stream
+sync; reboot
+```

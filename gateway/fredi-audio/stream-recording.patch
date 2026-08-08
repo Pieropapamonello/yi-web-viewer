@@ -1,0 +1,91 @@
+diff --git a/build/src/stream.c b/build/src/stream.c
+--- a/build/src/stream.c
++++ b/build/src/stream.c
+@@ -29,13 +29,73 @@
+ #include <sys/ioctl.h>
+ #include <rts_io_adc.h>
+ #include <sys/resource.h>
++#include <time.h>
++#include <dirent.h>
+ 
+ #define FIFO_NAME_HIGH "/tmp/h264_high_fifo"
++#define RECORD_FLAG "/var/tmp/sd/recording.enabled"
++#define RECORD_DIR "/var/tmp/sd/recordings"
++#define RECORD_SEGMENT_SECONDS 60
++#define RECORD_MAX_BYTES (2ULL * 1024ULL * 1024ULL * 1024ULL)
+ //#define DOMAIN_GPIO_MCU    1
+ //#define GPIO_ANODE 20
+ //#define GPIO_CATHODE 21
+ 
+ int isp = -1;
+ static int g_exit;
++static FILE *record_fd;
++static time_t record_started;
++static char record_partial[256];
++static char record_final[256];
++
++static void recorder_close(void) {
++    if (!record_fd) return;
++    fflush(record_fd); fsync(fileno(record_fd)); fclose(record_fd); record_fd = NULL;
++    rename(record_partial, record_final);
++}
++
++static void recorder_trim(void) {
++    DIR *dir = opendir(RECORD_DIR); struct dirent *entry; struct stat info;
++    unsigned long long total = 0; char oldest[256] = ""; time_t oldest_time = 0;
++    if (!dir) return;
++    while ((entry = readdir(dir))) {
++        char full[256];
++        if (!strstr(entry->d_name, ".h264")) continue;
++        snprintf(full, sizeof(full), "%s/%s", RECORD_DIR, entry->d_name);
++        if (stat(full, &info)) continue;
++        total += (unsigned long long)info.st_size;
++        if (!oldest_time || info.st_mtime < oldest_time) { oldest_time = info.st_mtime; strncpy(oldest, full, sizeof(oldest) - 1); }
++    }
++    closedir(dir);
++    if (total > RECORD_MAX_BYTES && oldest[0]) unlink(oldest);
++}
++
++static void recorder_open(time_t now) {
++    struct tm *local;
++    mkdir(RECORD_DIR, 0755); local = localtime(&now); if (!local) return;
++    strftime(record_final, sizeof(record_final), RECORD_DIR "/fredi_%Y-%m-%d_%H-%M-%S.h264", local);
++    snprintf(record_partial, sizeof(record_partial), "%s.partial", record_final);
++    record_fd = fopen(record_partial, "wb"); record_started = now;
++    recorder_trim();
++}
++
++static void recorder_write(const void *data, size_t size, int key_frame) {
++    time_t now = time(NULL); int enabled = access(RECORD_FLAG, F_OK) == 0;
++    if (!enabled) { recorder_close(); return; }
++    if (record_fd && key_frame && now - record_started >= RECORD_SEGMENT_SECONDS) recorder_close();
++    if (!record_fd) { if (!key_frame) return; recorder_open(now); }
++    if (record_fd && fwrite(data, 1, size, record_fd) != size) recorder_close();
++}
++
++static int recorder_is_key(const unsigned char *data, size_t size) {
++    size_t i;
++    for (i = 0; i + 5 < size; i++) {
++        size_t nal = 0;
++        if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) nal = i + 3;
++        else if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1) nal = i + 4;
++        if (nal && ((data[nal] & 0x1f) == 5 || (data[nal] & 0x1f) == 7)) return 1;
++    }
++    return 0;
++}
+ int night = 3;
+ int arg_amount = 0;
+@@ -332,6 +392,7 @@ int start_stream() {
+             } else {
+                 fflush(fd);
+             }
++            recorder_write(buffer->vm_addr, buffer->bytesused, recorder_is_key((const unsigned char *)buffer->vm_addr, buffer->bytesused));
+             number++;
+             rts_av_put_buffer(buffer);
+             buffer = NULL;
+@@ -339,4 +400,5 @@ int start_stream() {
+     }
+ 
+     rts_av_disable_chn(isp);
++    recorder_close();
+     rts_av_disable_chn(h264);
