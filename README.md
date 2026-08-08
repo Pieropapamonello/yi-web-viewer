@@ -11,6 +11,7 @@ Una web app multiutente senza pubblicita' per vedere e configurare telecamere HL
 - verifica collegamenti, live a bassa latenza, audio, qualità reale 1080p/480p, fullscreen e orientamento;
 - snapshot e clip persistenti nel browser tramite IndexedDB, con data e ora fino ai secondi impresse nei fotogrammi, download ed eliminazione;
 - Smart Vision opzionale: analisi volontaria di un fotogramma con Groq o xAI, senza esporre la chiave al browser e senza archiviare l'immagine nel gateway;
+- inseguimento persona volontario nel browser con MediaPipe, riquadro selezionabile e impulsi PTZ brevi su live WebRTC;
 - controlli PTZ IPC365 verificati tramite confronto automatico dei fotogrammi;
 - PTZ reattivo con comando alla pressione/swipe, tre intensità, frecce da tastiera, feedback aptico e recupero immediato del bordo live;
 - data e orologio con secondi sovrapposti al live;
@@ -148,6 +149,10 @@ Per xAI imposta `AI_API_BASE_URL=https://api.x.ai/v1` e un modello Grok con inpu
 ### Smart Detect con Cloudflare Workers AI
 
 Il Worker in `cloudflare/smart-detect` espone un endpoint compatibile con la Responses API usata dal gateway e analizza un solo JPEG alla volta con il binding nativo Workers AI. Il modello segnala persone, animali, veicoli, pacchi/oggetti lasciati e un livello di attenzione, senza riconoscimento dell'identità. L'endpoint confronta a tempo costante il Bearer token con il solo hash SHA-256 configurato in `wrangler.jsonc`; immagini, prompt e credenziali non vengono registrati dal codice applicativo.
+
+### Inseguimento persona locale
+
+Il pulsante **Segui persona** carica su richiesta MediaPipe Object Detector `0.10.35` ed EfficientDet Lite0. Il modello elabora il video nel browser, filtra esclusivamente la categoria `person` e non esegue riconoscimento facciale. Il riquadro verde indica il soggetto seguito; quando sono presenti più persone è possibile toccare un riquadro per cambiare soggetto. Una zona neutra configurabile riduce le oscillazioni e il gateway usa impulsi PTZ da 100–180 ms. Un movimento manuale, il cambio camera, una scheda nascosta o la perdita prolungata del soggetto fermano l'inseguimento. La funzione richiede WebRTC e resta sempre disattivata all'avvio.
 
 Configurazione gateway locale:
 

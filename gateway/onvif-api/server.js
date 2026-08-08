@@ -149,7 +149,7 @@ function ipc365Frame(action, requestedStep = IPC365_PTZ_STEP) {
   return frame;
 }
 
-function ipc365Move(action, step) {
+function ipc365Move(action, step, durationMs = MOVE_DURATION) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host: HOST, port: IPC365_PTZ_PORT });
     let settled = false;
@@ -171,14 +171,14 @@ function ipc365Move(action, step) {
           resolve();
         };
         if (action === 'stop') return finish();
-        setTimeout(() => socket.write(ipc365Frame('stop'), (stopError) => stopError ? fail(stopError) : finish()), MOVE_DURATION);
+        setTimeout(() => socket.write(ipc365Frame('stop'), (stopError) => stopError ? fail(stopError) : finish()), durationMs);
       });
     });
   });
 }
 
-async function move(action, step) {
-  await ipc365Move(action === 'home' ? 'stop' : action, step);
+async function move(action, step, durationMs = MOVE_DURATION) {
+  await ipc365Move(action === 'home' ? 'stop' : action, step, durationMs);
 }
 
 async function gotoPreset(index) {
@@ -1095,9 +1095,10 @@ const server = http.createServer(async (request, response) => {
     const body = await readJson(request);
     if (pathname === '/api/ptz' && request.method === 'POST') {
       const step = Math.min(30, Math.max(3, Number(body.step) || IPC365_PTZ_STEP));
-      await move(body.action, step);
-      console.log(`PTZ ${body.action} step ${step} completed in ${MOVE_DURATION}ms`);
-      return send(response, 200, { ok: true, action: body.action, step, durationMs: MOVE_DURATION }, headers);
+      const durationMs = Math.min(2000, Math.max(80, Number(body.durationMs) || MOVE_DURATION));
+      await move(body.action, step, durationMs);
+      console.log(`PTZ ${body.action} step ${step} completed in ${durationMs}ms`);
+      return send(response, 200, { ok: true, action: body.action, step, durationMs }, headers);
     }
     if (pathname === '/api/capabilities' && request.method === 'GET') {
       return send(response, 200, {
