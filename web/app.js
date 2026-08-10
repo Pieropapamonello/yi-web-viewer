@@ -21,6 +21,9 @@
   let hlsReconnectTimer = 0;
   let hlsRecoveryAttempts = 0;
   let hlsRecovering = false;
+  let lastPlaybackTime = -1;
+  let lastPlaybackProgressAt = Date.now();
+  let lastStallRecoveryAt = 0;
   let peerConnection = null;
   let whepResourceUrl = '';
   let whepAuthorization = '';
@@ -980,6 +983,9 @@
     hlsReconnectTimer = 0;
     hlsRecoveryAttempts = 0;
     hlsRecovering = false;
+    lastPlaybackTime = -1;
+    lastPlaybackProgressAt = Date.now();
+    lastStallRecoveryAt = 0;
     if (mediaRecorder?.state === 'recording') mediaRecorder.stop();
     stopPersonTracking();
     stopMotionDetection();
@@ -1111,11 +1117,11 @@
       hls = new Hls({
         lowLatencyMode:true,
         liveSyncDurationCount:2,
-        liveMaxLatencyDurationCount:5,
+        liveMaxLatencyDurationCount:10,
         maxLiveSyncPlaybackRate:1.5,
-        maxBufferLength:8,
-        maxMaxBufferLength:16,
-        backBufferLength:8,
+        maxBufferLength:12,
+        maxMaxBufferLength:24,
+        backBufferLength:12,
         manifestLoadingMaxRetry:6,
         manifestLoadingRetryDelay:500,
         manifestLoadingMaxRetryTimeout:5000,
@@ -1167,6 +1173,28 @@
       hlsReconnectTimer = 0;
       if (generation === streamGeneration) connectHls(camera, generation);
     }, delay);
+  }
+
+  function notePlaybackProgress() {
+    if (Math.abs(player.currentTime - lastPlaybackTime) < .02) return;
+    lastPlaybackTime = player.currentTime;
+    lastPlaybackProgressAt = Date.now();
+  }
+
+  function recoverStalledPlayback() {
+    if (archivePlayback || document.hidden || player.paused || !$('stage').classList.contains('playing')) return;
+    const now = Date.now();
+    if (now - lastPlaybackProgressAt < 5000 || now - lastStallRecoveryAt < 7000) return;
+    const camera = currentCamera();
+    if (!camera) return;
+    lastStallRecoveryAt = now;
+    if (liveTransport === 'WebRTC') {
+      console.warn('WebRTC fermo: passaggio automatico al flusso HLS di continuità.');
+      stopWebRtc();
+      connectHls(camera, streamGeneration);
+      return;
+    }
+    scheduleHlsReconnect(camera, streamGeneration, 'watchdog: fotogrammi fermi');
   }
 
   function offline(title, detail) {
@@ -2081,6 +2109,7 @@
     $('stage').addEventListener('pointercancel', () => { gestureStart = null; $('gestureHint').hidden = true; });
     $('recordingList').addEventListener('click', (event) => { const button = event.target.closest('[data-delete-recording]'); if (button) deleteRecording(button.dataset.deleteRecording); });
     player.addEventListener('playing', () => {
+      lastPlaybackTime = player.currentTime; lastPlaybackProgressAt = Date.now();
       setVideoLoading(false); $('stage').classList.add('playing'); $('cameraStatusDot').classList.add('live'); $('liveTag').className = 'live-badge live'; $('liveTag').textContent = archivePlayback ? 'ARCHIVIO' : liveTransport || 'LIVE';
       updateTrackingAvailability();
       if (!archivePlayback) startMotionDetection();
@@ -2098,10 +2127,13 @@
     });
     document.addEventListener('visibilitychange', () => { if (document.hidden) { stopPtzHold(); if (trackingEnabled) stopPersonTracking('Pagina non visibile: inseguimento arrestato.', true); } });
     player.addEventListener('timeupdate', () => {
+      notePlaybackProgress();
       if (!archivePlayback || !selectedArchiveClip) return;
       const start = new Date(selectedArchiveClip.start); const seconds = start.getHours() * 3600 + start.getMinutes() * 60 + start.getSeconds() + player.currentTime;
       $('timelineScrubber').value = String(Math.min(86399, Math.round(seconds))); updateTimelineTime(seconds);
     });
+    ['loadeddata','progress'].forEach((name) => player.addEventListener(name, notePlaybackProgress));
+    setInterval(recoverStalledPlayback, 2000);
     $('viewFocus').addEventListener('click', () => setView('focus')); $('viewGrid').addEventListener('click', () => setView('grid'));
     $('globalSearch').addEventListener('input', (event) => { searchText = event.target.value.trim().toLowerCase(); renderStats(); renderSwitcher(); renderGrid(); });
     $('clearEvents').addEventListener('click', clearEvents);

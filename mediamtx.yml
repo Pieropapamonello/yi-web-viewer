@@ -4,6 +4,8 @@ hlsAddress: :8888
 hlsAllowOrigins: ['*']
 hlsAlwaysRemux: true
 hlsVariant: lowLatency
+hlsSegmentCount: 10
+hlsSegmentDuration: 2s
 
 # WebRTC is the primary interactive live view. HLS remains enabled for
 # compatibility, recording and archive playback.
@@ -16,26 +18,53 @@ webrtcAdditionalHosts: ['192.168.1.2', 'nelloonrender.duckdns.org']
 
 paths:
   ipc365:
-    # The FFmpeg bridge publishes the normalized IPC365 stream here.
-    source: publisher
+    # The UDP listener stays alive while FFmpeg reconnects to this camera.
+    # FFmpeg preserves wall-clock timestamps so every restart continues the
+    # same timeline instead of resetting HLS back to zero.
+    source: udp+mpegts://0.0.0.0:9000
+    alwaysAvailable: true
+    alwaysAvailableTracks:
+      - codec: H264
+      - codec: MPEG4Audio
+        sampleRate: 8000
+        channelCount: 1
 
   ipc365-low:
     # 480p profile generated locally for constrained mobile connections.
     source: publisher
+    alwaysAvailable: true
+    alwaysAvailableTracks:
+      - codec: H264
+      - codec: MPEG4Audio
+        sampleRate: 8000
+        channelCount: 1
 
   ipc365-webrtc:
     # H.264 + Opus profile used by the browser through WHEP.
     source: publisher
+    alwaysAvailable: true
+    alwaysAvailableTracks:
+      - codec: H264
+      - codec: Opus
 
   yi:
     # Original FREDI G1 1080p stream normalized by FFmpeg.
     source: publisher
     rtspTransport: tcp
+    alwaysAvailable: true
+    alwaysAvailableTracks:
+      - codec: H264
 
   yi-low:
     # 480p mobile profile generated from the FREDI G1 stream.
     source: publisher
+    alwaysAvailable: true
+    alwaysAvailableTracks:
+      - codec: H264
 
   yi-webrtc:
     # Low-latency FREDI G1 profile exposed through WHEP.
     source: publisher
+    alwaysAvailable: true
+    alwaysAvailableTracks:
+      - codec: H264

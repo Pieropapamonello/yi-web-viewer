@@ -35,6 +35,28 @@ run_ffmpeg() {
   done
 }
 
+run_ipc365_main() {
+  while true; do
+    # This camera resets its RTSP clock when it closes the connection roughly
+    # once a minute. Re-encode the video timestamps and anchor every new run to
+    # the current epoch so the long-lived MPEG-TS listener always sees a
+    # strictly increasing timeline.
+    epoch_offset=$(date +%s)
+    ffmpeg \
+      -hide_banner -loglevel warning -fflags +genpts+discardcorrupt+igndts \
+      -rtsp_transport tcp -timeout 10000000 -i "$IPC365_RTSP_URL" \
+      -map 0:v:0 -map '0:a:0?' \
+      -vf 'fps=20,setpts=N/(20*TB)' \
+      -c:v libx264 -preset veryfast -tune zerolatency -crf 22 -g 40 -sc_threshold 0 \
+      -c:a aac -b:a 48k -ar 8000 -ac 1 -af 'aresample=async=1000:first_pts=0' \
+      -output_ts_offset "$epoch_offset" -mpegts_copyts 1 -muxdelay 0.1 \
+      -f mpegts 'udp://127.0.0.1:9000?pkt_size=1316'
+    code=$?
+    echo "[ipc365-main] FFmpeg terminato con codice $code; riconnessione tra ${RECONNECT_DELAY}s." >&2
+    sleep "$RECONNECT_DELAY"
+  done
+}
+
 retain_archive() {
   while true; do
     find /archive -type f \( -name '*.mp4' -o -name '*.webm' \) -mtime "+$ARCHIVE_RETENTION_DAYS" -delete
@@ -57,11 +79,7 @@ remember_pid "$!"
 
 sleep 2
 
-run_ffmpeg ipc365-main \
-  -hide_banner -loglevel warning -rtsp_transport tcp \
-  -i "$IPC365_RTSP_URL" \
-  -map 0:v:0 -map '0:a:0?' -c:v copy -c:a aac -b:a 48k -ar 8000 -ac 1 \
-  -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:8554/ipc365 &
+run_ipc365_main &
 remember_pid "$!"
 
 run_ffmpeg fredi-main \
