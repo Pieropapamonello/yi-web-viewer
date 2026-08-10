@@ -8,7 +8,7 @@ RUN apk add --no-cache ffmpeg tzdata
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev && npm cache clean --force
-COPY server.js device-actions.js ./
+COPY server.js device-actions.js ipc365-protocol.js ./
 
 COPY --from=mediamtx /mediamtx /usr/local/bin/mediamtx
 COPY --from=ffmpeg-assets /usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf /usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf

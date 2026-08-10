@@ -408,6 +408,10 @@
     configure('lightFeature', deviceState.light, deviceFeatures.light);
     configure('nightVisionFeature', deviceState.nightVision, deviceFeatures.nightVision);
     configure('guardFeature', deviceState.alarm, deviceFeatures.guard);
+    if (deviceFeatures.guardMomentary) {
+      $('guardFeature').classList.remove('active');
+      $('guardFeature').querySelector('small').textContent = 'Riproduci allarme';
+    }
     configure('nativeTrackingFeature', deviceState.tracking, deviceFeatures.nativeTracking);
     $('opticalZoom').hidden = !deviceFeatures.opticalZoom;
     $('opticalZoom').querySelectorAll('button').forEach((button) => { button.disabled = !deviceFeatures.opticalZoom || deviceActionBusy; });
@@ -444,8 +448,8 @@
     deviceActionBusy = true; updateDeviceControls();
     try {
       const result = await deviceFetch('/api/device/action', { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ feature, value }) });
-      deviceState = { ...deviceState, ...(result.state || {}), [feature]:value };
-      if (!quiet) toast(`${feature}: ${value}. Comando confermato dalla camera.`, 'success');
+      deviceState = { ...deviceState, ...(result.state || {}), ...(value === 'trigger' ? {} : { [feature]:value }) };
+      if (!quiet) toast(value === 'trigger' ? 'Allarme inviato alla camera.' : `${feature}: ${value}. Comando confermato dalla camera.`, 'success');
       recordActivity('device', 'Comando dispositivo', `${feature}: ${value}`);
       return result;
     } catch (error) {
@@ -455,6 +459,9 @@
   }
 
   function cycleDeviceFeature(feature) {
+    if (feature === 'alarm' && deviceFeatures.guardMomentary) {
+      return sendDeviceAction('alarm', 'trigger').catch(() => {});
+    }
     if (feature === 'light' || feature === 'nightVision') {
       const supportsAuto = feature === 'light' ? deviceFeatures.lightAuto : deviceFeatures.nightVisionAuto;
       const values = supportsAuto ? ['off', 'on', 'auto'] : ['off', 'on'];

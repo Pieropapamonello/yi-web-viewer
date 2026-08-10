@@ -6,7 +6,7 @@ USER root
 
 COPY --from=mediamtx /mediamtx /usr/local/bin/mediamtx
 COPY --from=ffmpeg-assets /usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf /usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf
-COPY server.js device-actions.js ./
+COPY server.js device-actions.js ipc365-protocol.js ./
 COPY start-unified.sh /opt/fredi-control/start-unified.sh
 
 RUN mkdir -p /data /archive /opt/fredi-control \

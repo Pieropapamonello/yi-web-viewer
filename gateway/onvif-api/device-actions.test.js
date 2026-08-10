@@ -27,6 +27,7 @@ test('rejects newline injection in fixed FREDI commands', () => {
 test('advertises a feature only when its complete command set exists', () => {
   assert.equal(featureCapabilities({ 'alarm:on':1 }).guard, false);
   assert.equal(featureCapabilities({ 'alarm:on':1, 'alarm:off':1 }).guard, true);
+  assert.equal(featureCapabilities({ 'alarm:trigger':1 }).guardMomentary, true);
   assert.equal(featureCapabilities({ 'zoom:in':1, 'zoom:out':1, 'zoom:stop':1 }).opticalZoom, true);
 });
 

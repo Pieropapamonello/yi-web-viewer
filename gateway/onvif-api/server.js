@@ -16,6 +16,14 @@ const {
   parseIpcCommands,
   publicState,
 } = require('./device-actions');
+const {
+  alarmTriggerFrame,
+  ipc365Id,
+  keepaliveFrame,
+  talkAudioFrame,
+  talkCloseFrame,
+  talkHandshakeFrames,
+} = require('./ipc365-protocol');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.ONVIF_HOST || '192.168.1.50';
@@ -31,6 +39,7 @@ const IPC365_PTZ_PORT = Number(process.env.IPC365_PTZ_PORT || 23456);
 const IPC365_PTZ_STEP = Math.min(30, Math.max(3, Number(process.env.IPC365_PTZ_STEP || 12)));
 const IPC365_SOURCE_ID = process.env.IPC365_SOURCE_ID || 'af93c63b';
 const IPC365_DEVICE_ID = process.env.IPC365_DEVICE_ID || '09f74b01';
+const IPC365_CLIENT_ID = process.env.IPC365_CLIENT_ID || 'e4126900';
 const FREDI_PTZ_HOST = process.env.FREDI_PTZ_HOST || '192.168.1.78';
 const FREDI_PTZ_PORT = Number(process.env.FREDI_PTZ_PORT || 23);
 const FREDI_PTZ_COMMAND = process.env.FREDI_PTZ_COMMAND || '/var/tmp/sd/ptzctl';
@@ -73,6 +82,8 @@ let cameraPromise;
 const pendingDropbox = new Map();
 const aiUsage = new Map();
 let ipcTalkSocket = null;
+let ipcTalkStartPromise = null;
+let ipcTalkKeepalive = null;
 let ipcTalkSequence = 1;
 let frediTalkSocket = null;
 let ipcPtzSafetyTimer = null;
@@ -82,45 +93,54 @@ const frediDeviceState = {};
 const FREDI_TALK_PORT = Number(process.env.FREDI_TALK_PORT || 23457);
 const FREDI_TALK_DEVICE = Math.max(0, Number(process.env.FREDI_TALK_DEVICE || 1));
 const IPC365_TALK_ENABLED = String(process.env.IPC365_TALK_ENABLED || '').toLowerCase() === 'true';
+const IPC365_ALARM_ENABLED = String(process.env.IPC365_ALARM_ENABLED || '').toLowerCase() === 'true';
 const FREDI_TALK_SECRET = crypto.createHmac('sha256', API_TOKEN).update('fredi-talk-v1').digest('hex');
 const FREDI_PTZ_FAST_PORT = Number(process.env.FREDI_PTZ_FAST_PORT || 23459);
 const FREDI_PTZ_FAST_SECRET = crypto.createHmac('sha256', API_TOKEN).update('fredi-ptz-v1').digest('hex');
 const FREDI_SD_PORT = Number(process.env.FREDI_SD_PORT || 23458);
 const FREDI_SD_SECRET = crypto.createHmac('sha256', API_TOKEN).update('fredi-sd-v1').digest('hex');
 
-function linearToAlaw(sample) {
-  let value = Math.max(-32768, Math.min(32767, sample));
-  const sign = value < 0 ? 0x00 : 0x80;
-  if (value < 0) value = -value - 1;
-  value = Math.min(value, 32635);
-  let exponent = 7;
-  for (let mask = 0x4000; exponent > 0 && !(value & mask); exponent -= 1, mask >>= 1) { /* locate segment */ }
-  const mantissa = exponent === 0 ? (value >> 4) & 0x0f : (value >> (exponent + 3)) & 0x0f;
-  return (sign | (exponent << 4) | mantissa) ^ 0x55;
-}
-
 function ipcTalkFrame(pcm) {
-  const frame = Buffer.alloc(352);
-  frame.set([0xcc,0xdd,0xee,0xff], 0);
-  frame.writeUInt32LE(0x9c57, 4);
-  frame.set([0xe4,0x12,0x69,0x00], 8);
-  frame.writeUInt32LE(frame.length, 12);
-  frame.writeUInt32LE(0x29, 20);
-  ipc365Id(IPC365_SOURCE_ID, 'IPC365_SOURCE_ID').copy(frame, 24);
-  frame.writeUInt32LE(ipcTalkSequence++ >>> 0, 28);
-  for (let index = 0; index < 320; index += 1) frame[32 + index] = linearToAlaw(pcm.readInt16LE(index * 2));
-  return frame;
+  return talkAudioFrame(pcm, ipcTalkSequence++, { clientId:IPC365_CLIENT_ID, sourceId:IPC365_SOURCE_ID });
 }
 
 function startIpcTalk() {
   if (ipcTalkSocket && !ipcTalkSocket.destroyed) return Promise.resolve();
-  return new Promise((resolve, reject) => {
+  if (ipcTalkStartPromise) return ipcTalkStartPromise;
+  ipcTalkStartPromise = new Promise((resolve, reject) => {
     const socket = net.createConnection({ host:HOST, port:IPC365_PTZ_PORT });
-    const timeout = setTimeout(() => { socket.destroy(); reject(new Error('IPC365 talk connection timeout')); }, 5000);
-    socket.once('connect', () => { clearTimeout(timeout); ipcTalkSocket = socket; resolve(); });
-    socket.once('error', (error) => { clearTimeout(timeout); if (ipcTalkSocket === socket) ipcTalkSocket = null; reject(error); });
-    socket.on('close', () => { if (ipcTalkSocket === socket) ipcTalkSocket = null; });
-  });
+    const ids = { clientId:IPC365_CLIENT_ID, sourceId:IPC365_SOURCE_ID, deviceId:IPC365_DEVICE_ID };
+    const handshake = talkHandshakeFrames(ids);
+    let received = Buffer.alloc(0);
+    let ready = false;
+    const timeout = setTimeout(() => { socket.destroy(); reject(new Error('IPC365 talk handshake timeout')); }, 5000);
+    socket.once('connect', () => socket.write(handshake.request));
+    socket.on('data', (chunk) => {
+      if (ready) return;
+      received = Buffer.concat([received, chunk]).subarray(-4096);
+      for (let offset = 0; offset + 16 <= received.length; offset += 1) {
+        if (received.readUInt32BE(offset) !== 0xccddeeff || received.readUInt32LE(offset + 4) !== 0x9c4e) continue;
+        ready = true; clearTimeout(timeout);
+        socket.write(handshake.acknowledge, (error) => {
+          if (error) return reject(error);
+          ipcTalkSocket = socket; ipcTalkSequence = 1;
+          ipcTalkKeepalive = setInterval(() => {
+            if (!socket.destroyed) socket.write(keepaliveFrame(IPC365_CLIENT_ID));
+          }, 3000); ipcTalkKeepalive.unref();
+          resolve();
+        });
+        break;
+      }
+    });
+    socket.once('error', (error) => { clearTimeout(timeout); if (!ready) reject(error); });
+    socket.on('close', () => {
+      if (ipcTalkSocket === socket) ipcTalkSocket = null;
+      if (ipcTalkKeepalive) clearInterval(ipcTalkKeepalive);
+      ipcTalkKeepalive = null;
+      if (!ready) { clearTimeout(timeout); reject(new Error('IPC365 talk connection closed during handshake')); }
+    });
+  }).finally(() => { ipcTalkStartPromise = null; });
+  return ipcTalkStartPromise;
 }
 
 async function writeIpcTalk(encoded) {
@@ -131,7 +151,28 @@ async function writeIpcTalk(encoded) {
 }
 
 function stopIpcTalk() {
-  ipcTalkSocket?.end(); ipcTalkSocket = null;
+  if (ipcTalkKeepalive) clearInterval(ipcTalkKeepalive);
+  ipcTalkKeepalive = null;
+  if (ipcTalkSocket && !ipcTalkSocket.destroyed) {
+    ipcTalkSocket.end(talkCloseFrame({ clientId:IPC365_CLIENT_ID, sourceId:IPC365_SOURCE_ID, deviceId:IPC365_DEVICE_ID }));
+  }
+  ipcTalkSocket = null;
+}
+
+function triggerIpcAlarm() {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host:HOST, port:IPC365_PTZ_PORT });
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return; settled = true; socket.destroy();
+      error ? reject(error) : resolve({ feature:'alarm', value:'trigger', acknowledged:false, captured:true });
+    };
+    socket.setTimeout(2500, () => finish(new Error('IPC365 alarm connection timeout')));
+    socket.once('error', finish);
+    socket.once('connect', () => socket.write(alarmTriggerFrame({
+      clientId:IPC365_CLIENT_ID, sourceId:IPC365_SOURCE_ID, deviceId:IPC365_DEVICE_ID,
+    }), (error) => error ? finish(error) : setTimeout(finish, 120)));
+  });
 }
 
 function tcpReady(host, port, timeoutMs = 900) {
@@ -395,11 +436,6 @@ const IPC365_HEADER = Buffer.from([
   0x00, 0x00, 0x00, 0x00,
 ]);
 
-function ipc365Id(value, name) {
-  if (!/^[a-f0-9]{8}$/i.test(value)) throw new Error(`${name} must contain exactly 8 hexadecimal characters`);
-  return Buffer.from(value, 'hex');
-}
-
 function ipc365Frame(action, requestedStep = IPC365_PTZ_STEP) {
   // The IPC365 frame declares 0x48 (72) bytes in its header. Sending only
   // 64 bytes is silently accepted by TCP but ignored by stricter 81XXF firmware.
@@ -467,6 +503,7 @@ async function continuousMove(action, step) {
 
 function executeIpcDeviceAction(feature, value) {
   const key = actionKey(feature, value);
+  if (feature === 'alarm' && value === 'trigger' && IPC365_ALARM_ENABLED) return triggerIpcAlarm();
   const spec = IPC365_DEVICE_COMMANDS[key];
   if (!spec) return Promise.reject(new Error(`IPC365 action ${key} is not configured`));
   const frame = Buffer.from(spec.frame);
@@ -1611,7 +1648,15 @@ const server = http.createServer(async (request, response) => {
       return send(response, 200, { ok:true, action:body.action }, headers);
     }
     if (pathname === '/api/device/state' && request.method === 'GET') {
-      return send(response, 200, { ok:true, features:IPC365_DEVICE_FEATURES, state:publicState(ipcDeviceState) }, headers);
+      return send(response, 200, {
+        ok:true,
+        features:{
+          ...IPC365_DEVICE_FEATURES,
+          guard:IPC365_ALARM_ENABLED || IPC365_DEVICE_FEATURES.guard,
+          guardMomentary:IPC365_ALARM_ENABLED || IPC365_DEVICE_FEATURES.guardMomentary,
+        },
+        state:publicState(ipcDeviceState),
+      }, headers);
     }
     if (pathname === '/api/device/action' && request.method === 'POST') {
       const result = await executeIpcDeviceAction(cleanText(body.feature, 32), cleanText(body.value, 32));
@@ -1629,6 +1674,8 @@ const server = http.createServer(async (request, response) => {
           localRecording:true,
           orientation:true,
           ...IPC365_DEVICE_FEATURES,
+          guard:IPC365_ALARM_ENABLED || IPC365_DEVICE_FEATURES.guard,
+          guardMomentary:IPC365_ALARM_ENABLED || IPC365_DEVICE_FEATURES.guardMomentary,
           talk:IPC365_TALK_ENABLED,
           sdPlayback:false,
           cloudPlayback:false,

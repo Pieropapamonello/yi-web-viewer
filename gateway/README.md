@@ -46,8 +46,13 @@ cancellazione richiedono anche il driver playback specifico del modello.
 L'audio bidirezionale FREDI usa per impostazione predefinita il dispositivo
 ALSA analogico `1`; può essere cambiato con `FREDI_TALK_DEVICE`. Il pulsante
 Parla viene pubblicato soltanto quando `talkd` risponde realmente. Per IPC365
-resta disabilitato finché `IPC365_TALK_ENABLED=true` non viene impostato dopo
-una cattura completa e una verifica del protocollo del modello.
+il driver riproduce la negoziazione locale `0x9c41/0x9c4d`, mantiene la
+sessione con keepalive e invia audio G.711 A-law in frame da 40 ms. Va abilitato
+con `IPC365_TALK_ENABLED=true` soltanto dopo una cattura completa del modello;
+`IPC365_CLIENT_ID`, `IPC365_SOURCE_ID` e `IPC365_DEVICE_ID` restano nel file
+locale. L'allarme sonoro acquisito è un impulso: con
+`IPC365_ALARM_ENABLED=true` la UI mostra “Riproduci allarme”, non un falso
+interruttore acceso/spento.
 
 Il controllo PTZ continuo usa `ptzd` sulla porta LAN `23459`: la pressione
 avvia subito il motore e il rilascio invia uno stop separato. Se il browser

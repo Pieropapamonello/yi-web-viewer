@@ -3,7 +3,7 @@
 const ACTION_VALUES = Object.freeze({
   light: ['off', 'on', 'auto'],
   nightVision: ['off', 'on', 'auto'],
-  alarm: ['off', 'on'],
+  alarm: ['off', 'on', 'trigger'],
   tracking: ['off', 'on'],
   zoom: ['in', 'out', 'stop'],
   sdRecording: ['off', 'continuous', 'event'],
@@ -67,7 +67,8 @@ function featureCapabilities(commands) {
     lightAuto:has('light', ['auto']),
     nightVision:has('nightVision', ['off', 'on']),
     nightVisionAuto:has('nightVision', ['auto']),
-    guard:has('alarm', ['off', 'on']),
+    guard:has('alarm', ['off', 'on']) || has('alarm', ['trigger']),
+    guardMomentary:has('alarm', ['trigger']),
     nativeTracking:has('tracking', ['off', 'on']),
     opticalZoom:has('zoom', ['in', 'out', 'stop']),
     nativeSdRecording:has('sdRecording', ['off', 'continuous', 'event']),
