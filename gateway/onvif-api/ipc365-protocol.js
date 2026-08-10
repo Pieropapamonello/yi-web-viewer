@@ -36,6 +36,15 @@ function talkCloseFrame({ clientId, sourceId, deviceId }) {
   return frame;
 }
 
+function talkStateFrame(enabled, { clientId, sourceId, deviceId }) {
+  const frame = baseFrame(0x4f35, 44, clientId);
+  ipc365Id(sourceId, 'IPC365_SOURCE_ID').copy(frame, 20);
+  ipc365Id(deviceId, 'IPC365_DEVICE_ID').copy(frame, 24);
+  frame.writeUInt32LE(1, 28);
+  frame.writeUInt32LE(enabled ? 1 : 0, 32);
+  return frame;
+}
+
 function keepaliveFrame(clientId) { return baseFrame(1, 20, clientId); }
 
 function linearToAlaw(sample) {
@@ -69,4 +78,4 @@ function alarmTriggerFrame({ clientId, sourceId, deviceId }) {
   return frame;
 }
 
-module.exports = { alarmTriggerFrame, ipc365Id, keepaliveFrame, talkAudioFrame, talkCloseFrame, talkHandshakeFrames };
+module.exports = { alarmTriggerFrame, ipc365Id, keepaliveFrame, talkAudioFrame, talkCloseFrame, talkHandshakeFrames, talkStateFrame };

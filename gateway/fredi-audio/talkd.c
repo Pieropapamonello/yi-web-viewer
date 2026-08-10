@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "tinyalsa/pcm.h"
+#include "tinyalsa/mixer.h"
 
 #define DEFAULT_PORT 23457
 #define AUDIO_BYTES 3200
@@ -33,6 +34,24 @@ static int authenticated(int client, const char *token) {
     return strlen(token) >= 24 && strcmp(line, token) == 0;
 }
 
+static void enable_speaker_route(void) {
+    struct mixer *mixer = mixer_open(0);
+    if (!mixer) {
+        fprintf(stderr, "mixer open failed\n");
+        return;
+    }
+    struct mixer_ctl *playback = mixer_get_ctl_by_name(mixer, "Master Playback Switch");
+    if (playback) {
+        const unsigned int count = mixer_ctl_get_num_values(playback);
+        for (unsigned int index = 0; index < count; index++) mixer_ctl_set_value(playback, index, 1);
+    }
+    struct mixer_ctl *output_mode = mixer_get_ctl_by_name(mixer, "Audio Mono/Stereo In/Out Mode");
+    if (output_mode && mixer_ctl_set_enum_by_string(output_mode, "mono out(channel copy stereo)") != 0) {
+        fprintf(stderr, "speaker mono route failed\n");
+    }
+    mixer_close(mixer);
+}
+
 static void play_client(int client, unsigned int device, const char *token) {
     struct pcm_config config;
     memset(&config, 0, sizeof(config));
@@ -46,6 +65,7 @@ static void play_client(int client, unsigned int device, const char *token) {
     config.silence_threshold = 0;
 
     if (!authenticated(client, token)) return;
+    enable_speaker_route();
     struct pcm *pcm = pcm_open(0, device, PCM_OUT, &config);
     if (!pcm || !pcm_is_ready(pcm)) {
         fprintf(stderr, "pcm open failed: %s\n", pcm ? pcm_get_error(pcm) : "allocation failed");

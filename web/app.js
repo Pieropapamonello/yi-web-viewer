@@ -526,6 +526,7 @@
   async function startTalking(event) {
     event?.preventDefault(); if (talking || $('talkFeature').disabled) return;
     event?.currentTarget?.setPointerCapture?.(event.pointerId);
+    talkQueue = Promise.resolve();
     talkRequested = true;
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('Il browser non consente l’accesso al microfono. Apri la pagina in HTTPS con Chrome o Safari.');
@@ -2108,7 +2109,7 @@
     $('rotateButton').addEventListener('click', toggleOrientation); $('orientationFeature').addEventListener('click', toggleOrientation);
     $('shareCamera').addEventListener('click', shareCurrentCamera);
     $('talkFeature').addEventListener('pointerdown', startTalking);
-    ['pointerup','pointercancel','pointerleave','lostpointercapture'].forEach((name) => $('talkFeature').addEventListener(name, stopTalking));
+    ['pointerup','pointercancel','lostpointercapture'].forEach((name) => $('talkFeature').addEventListener(name, stopTalking));
     $('favoriteCurrent').addEventListener('click', toggleFavorite);
     $('favoriteFilter').addEventListener('click', () => { preferences.favoritesOnly = !preferences.favoritesOnly; renderStats(); renderSwitcher(); renderGrid(); persistPreferences(); });
     $('cameraSort').addEventListener('change', () => { preferences.cameraSort = $('cameraSort').value; renderSwitcher(); renderGrid(); persistPreferences(); });

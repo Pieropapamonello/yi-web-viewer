@@ -27,7 +27,7 @@ try {
   Start-Sleep -Milliseconds 150; $writer.WriteLine('root')
   Start-Sleep -Milliseconds 250; $writer.WriteLine('')
   Start-Sleep -Milliseconds 250
-  $remote = "killall talkd 2>/dev/null; wget -q http://${localAddress}:$HttpPort/talkd -O /var/tmp/sd/talkd; chmod 755 /var/tmp/sd/talkd; /var/tmp/sd/talkd '$talkSecret' 23457 $AudioDevice </dev/null >/var/tmp/sd/talkd.log 2>&1 & sleep 1"
+  $remote = "if wget -q http://${localAddress}:$HttpPort/talkd -O /var/tmp/sd/talkd.new; then chmod 755 /var/tmp/sd/talkd.new; killall talkd 2>/dev/null; mv /var/tmp/sd/talkd.new /var/tmp/sd/talkd; /var/tmp/sd/talkd '$talkSecret' 23457 $AudioDevice </dev/null >/var/tmp/sd/talkd.log 2>&1 & fi; sleep 1"
   $writer.WriteLine($remote)
   Start-Sleep -Seconds 3
   $writer.Dispose(); $stream.Dispose(); $client.Dispose()

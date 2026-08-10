@@ -5,6 +5,10 @@ gateway and writes it to the RTS3903N ALSA playback device. It binds only on
 the camera LAN and requires a random token of at least 24 characters before
 accepting audio.
 
+At the beginning of each session the helper enables the playback switch and
+duplicates the mono microphone signal to both hardware output channels. This
+avoids silent talkback on boards whose speaker is wired to only one channel.
+
 The browser never connects to this port directly. Its microphone is sent over
 the authenticated HTTPS camera gateway, which resamples and forwards PCM.
 
@@ -15,6 +19,7 @@ written to the repository.
 
 Build target: MIPS32 little-endian with the RTS3903N toolchain and tinyalsa
 (`pcm.c`, `pcm_hw.c`, `limits.c`, `snd_card_plugin.c`, `-ldl -lpthread`).
+Run `build-talkd.ps1`, then `install.ps1`, to build and install the helper.
 
 ## Direct microSD recording
 

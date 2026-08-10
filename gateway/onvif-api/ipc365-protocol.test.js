@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { alarmTriggerFrame, keepaliveFrame, talkAudioFrame, talkCloseFrame, talkHandshakeFrames } = require('./ipc365-protocol');
+const { alarmTriggerFrame, keepaliveFrame, talkAudioFrame, talkCloseFrame, talkHandshakeFrames, talkStateFrame } = require('./ipc365-protocol');
 
 const ids = { clientId:'e4126900', sourceId:'7ce0db3b', deviceId:'e3856f02' };
 
@@ -15,6 +15,13 @@ test('builds the captured IPC365 talk handshake exactly', () => {
     'ccddeeff429c0000e412690020000000000000007ce0db3be3856f0229000000'.repeat(3));
   assert.equal(talkCloseFrame(ids).toString('hex'),
     'ccddeeff4f9c0000e41269002c00000000000000e3856f0229000000010000007ce0db3b0100000000000000');
+});
+
+test('builds the talk speaker state captured from the official app', () => {
+  assert.equal(talkStateFrame(true, ids).toString('hex'),
+    'ccddeeff354f0000e41269002c000000000000007ce0db3be3856f0201000000010000000000000000000000');
+  assert.equal(talkStateFrame(false, ids).toString('hex'),
+    'ccddeeff354f0000e41269002c000000000000007ce0db3be3856f0201000000000000000000000000000000');
 });
 
 test('builds 40 ms A-law audio and keepalive frames', () => {

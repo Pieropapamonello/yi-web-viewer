@@ -23,6 +23,7 @@ const {
   talkAudioFrame,
   talkCloseFrame,
   talkHandshakeFrames,
+  talkStateFrame,
 } = require('./ipc365-protocol');
 
 const PORT = Number(process.env.PORT || 3000);
@@ -85,7 +86,9 @@ let ipcTalkSocket = null;
 let ipcTalkStartPromise = null;
 let ipcTalkKeepalive = null;
 let ipcTalkSequence = 1;
+let ipcTalkBytes = 0;
 let frediTalkSocket = null;
+let frediTalkBytes = 0;
 let ipcPtzSafetyTimer = null;
 let frediPtzSafetyTimer = null;
 const ipcDeviceState = {};
@@ -123,10 +126,12 @@ function startIpcTalk() {
         ready = true; clearTimeout(timeout);
         socket.write(handshake.acknowledge, (error) => {
           if (error) return reject(error);
-          ipcTalkSocket = socket; ipcTalkSequence = 1;
+          socket.write(talkStateFrame(true, ids));
+          ipcTalkSocket = socket; ipcTalkSequence = 1; ipcTalkBytes = 0;
           ipcTalkKeepalive = setInterval(() => {
             if (!socket.destroyed) socket.write(keepaliveFrame(IPC365_CLIENT_ID));
           }, 3000); ipcTalkKeepalive.unref();
+          console.log('IPC365 talk session ready; speaker enabled');
           resolve();
         });
         break;
@@ -148,14 +153,19 @@ async function writeIpcTalk(encoded) {
   if (!pcm.length || pcm.length > 128000 || pcm.length % 640) throw new Error('Talk audio must contain 40 ms PCM frames');
   await startIpcTalk();
   for (let offset = 0; offset < pcm.length; offset += 640) ipcTalkSocket.write(ipcTalkFrame(pcm.subarray(offset, offset + 640)));
+  ipcTalkBytes += pcm.length;
 }
 
 function stopIpcTalk() {
   if (ipcTalkKeepalive) clearInterval(ipcTalkKeepalive);
   ipcTalkKeepalive = null;
   if (ipcTalkSocket && !ipcTalkSocket.destroyed) {
-    ipcTalkSocket.end(talkCloseFrame({ clientId:IPC365_CLIENT_ID, sourceId:IPC365_SOURCE_ID, deviceId:IPC365_DEVICE_ID }));
+    const ids = { clientId:IPC365_CLIENT_ID, sourceId:IPC365_SOURCE_ID, deviceId:IPC365_DEVICE_ID };
+    ipcTalkSocket.write(talkStateFrame(false, ids));
+    ipcTalkSocket.end(talkCloseFrame(ids));
   }
+  if (ipcTalkBytes) console.log(`IPC365 talk session stopped after ${ipcTalkBytes} PCM bytes`);
+  ipcTalkBytes = 0;
   ipcTalkSocket = null;
 }
 
@@ -276,16 +286,20 @@ async function startFrediTalk() {
   if (frediTalkSocket && !frediTalkSocket.destroyed) return;
   try { await connectFrediTalk(); }
   catch { await launchFrediTalkDaemon(); await new Promise((resolve) => setTimeout(resolve, 350)); await connectFrediTalk(); }
+  frediTalkBytes = 0;
+  console.log('FREDI talk session ready; speaker route enabled');
 }
 
 async function writeFrediTalk(encoded) {
   const pcm = Buffer.from(encoded || '', 'base64');
   if (!pcm.length || pcm.length > 128000 || pcm.length % 2) throw new Error('Invalid FREDI PCM audio');
-  await startFrediTalk(); frediTalkSocket.write(pcm);
+  await startFrediTalk(); frediTalkSocket.write(pcm); frediTalkBytes += pcm.length;
 }
 
 function stopFrediTalk() {
   frediTalkSocket?.end(); frediTalkSocket = null;
+  if (frediTalkBytes) console.log(`FREDI talk session stopped after ${frediTalkBytes} PCM bytes`);
+  frediTalkBytes = 0;
 }
 
 function launchFrediSdServer() {

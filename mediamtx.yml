@@ -21,49 +21,24 @@ paths:
     # A new publisher session is created whenever this camera resets RTSP.
     # This also resets the HLS muxer and prevents stale multi-minute segments.
     source: publisher
-    alwaysAvailable: true
-    alwaysAvailableTracks:
-      - codec: H264
-      - codec: MPEG4Audio
-        sampleRate: 8000
-        channelCount: 1
 
   ipc365-low:
     # 480p profile generated locally for constrained mobile connections.
     source: publisher
-    alwaysAvailable: true
-    alwaysAvailableTracks:
-      - codec: H264
-      - codec: MPEG4Audio
-        sampleRate: 8000
-        channelCount: 1
 
   ipc365-webrtc:
     # H.264 + Opus profile used by the browser through WHEP.
     source: publisher
-    alwaysAvailable: true
-    alwaysAvailableTracks:
-      - codec: H264
-      - codec: Opus
 
   yi:
     # Original FREDI G1 1080p stream normalized by FFmpeg.
     source: publisher
     rtspTransport: tcp
-    alwaysAvailable: true
-    alwaysAvailableTracks:
-      - codec: H264
 
   yi-low:
     # 480p mobile profile generated from the FREDI G1 stream.
     source: publisher
-    alwaysAvailable: true
-    alwaysAvailableTracks:
-      - codec: H264
 
   yi-webrtc:
     # Low-latency FREDI G1 profile exposed through WHEP.
     source: publisher
-    alwaysAvailable: true
-    alwaysAvailableTracks:
-      - codec: H264
