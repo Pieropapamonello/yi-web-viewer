@@ -18,10 +18,9 @@ webrtcAdditionalHosts: ['192.168.1.2', 'nelloonrender.duckdns.org']
 
 paths:
   ipc365:
-    # The UDP listener stays alive while FFmpeg reconnects to this camera.
-    # FFmpeg preserves wall-clock timestamps so every restart continues the
-    # same timeline instead of resetting HLS back to zero.
-    source: udp+mpegts://0.0.0.0:9000
+    # A new publisher session is created whenever this camera resets RTSP.
+    # This also resets the HLS muxer and prevents stale multi-minute segments.
+    source: publisher
     alwaysAvailable: true
     alwaysAvailableTracks:
       - codec: H264
