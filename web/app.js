@@ -116,10 +116,27 @@
     return auth?.token ? { ...extra, Authorization:`Bearer ${auth.token}` } : extra;
   }
 
+  async function fetchGateway(path, options = {}) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    try {
+      return await fetch(`${gatewayBase}${path}`, {
+        ...options,
+        cache:'no-store',
+        signal:controller.signal,
+      });
+    } catch (error) {
+      const unavailable = new Error('Gateway domestico non raggiungibile. Verifica che il PC, Docker Desktop e l\'inoltro HTTPS della porta 443 siano attivi, poi riprova.');
+      unavailable.cause = error;
+      throw unavailable;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async function gatewayFetch(path, options = {}) {
-    const response = await fetch(`${gatewayBase}${path}`, {
+    const response = await fetchGateway(path, {
       ...options,
-      cache:'no-store',
       headers:authHeaders(options.headers || {}),
     });
     const result = await response.json().catch(() => ({}));
@@ -180,7 +197,7 @@
     try {
       const path = authMode === 'register' ? '/api/auth/register' : '/api/auth/login';
       const payload = authMode === 'register' ? { username, email:$('registerEmail').value.trim(), password } : { username, password };
-      const response = await fetch(`${gatewayBase}${path}`, { method:'POST', cache:'no-store', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify(payload) });
+      const response = await fetchGateway(path, { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify(payload) });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || 'Accesso non riuscito.');
       auth = { token:result.token, expiresAt:result.expiresAt };
@@ -205,6 +222,7 @@
       'Email already registered':'Email già registrata.',
       'Too many login attempts. Try again later.':'Troppi tentativi. Riprova più tardi.',
       'Too many registrations. Try again later.':'Troppe registrazioni dalla rete. Riprova più tardi.',
+      'Failed to fetch':'Gateway domestico non raggiungibile. Verifica che il PC, Docker Desktop e l\'inoltro HTTPS della porta 443 siano attivi, poi riprova.',
     };
     return translations[message] || message;
   }
