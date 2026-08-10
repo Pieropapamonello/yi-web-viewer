@@ -76,6 +76,10 @@
   let trackingCommandInFlight = false;
   let trackingLastCommandAt = 0;
   let trackingLastVideoTime = -1;
+  let trackingFrameCanvas = null;
+  let trackingFrameContext = null;
+  let trackingInferenceDelay = 900;
+  let trackingSlowInferences = 0;
   const healthByCamera = new Map();
   let streamConnectStarted = 0;
   let talkStream = null;
@@ -647,11 +651,12 @@
 
   async function notifyDetectedObjects() {
     const camera = currentCamera();
-    if (!camera?.notificationsEnabled || notificationDetectionBusy || Date.now() < notificationCooldownUntil || player.readyState < 2) return;
+    if (!camera?.notificationsEnabled || notificationDetectionBusy || trackingEnabled || trackingStarting || Date.now() < notificationCooldownUntil || player.readyState < 2) return;
     notificationDetectionBusy = true;
     try {
       const detector = await loadPersonDetector();
-      const result = detector.detectForVideo(player, performance.now());
+      const frame = prepareDetectionFrame();
+      const result = detector.detectForVideo(frame, performance.now());
       const found = new Set((result?.detections || []).filter((item) => Number(item.categories?.[0]?.score || 0) >= .55).map((item) => detectionKind(item.categories?.[0]?.categoryName || '')).filter(Boolean));
       const selected = [...found].filter((kind) => kind === 'person' ? camera.notifyPerson !== false : kind === 'animal' ? camera.notifyAnimal !== false : camera.notifyVehicle !== false);
       if (!selected.length) return;
@@ -689,6 +694,7 @@
     trackingEnabled = false; trackingStarting = false;
     clearTimeout(trackingTimer); trackingTimer = 0;
     trackingTarget = null; trackingMisses = 0; trackingCommandInFlight = false; trackingLastVideoTime = -1;
+    trackingInferenceDelay = 900; trackingSlowInferences = 0;
     clearTrackingOverlay();
     $('trackingToggle').classList.remove('active'); $('trackingToggle').setAttribute('aria-pressed', 'false'); $('trackingToggle').textContent = 'Attiva';
     updateTrackingAvailability();
@@ -703,6 +709,7 @@
       await loadPersonDetector();
       if (!trackingStarting || !trackingAvailable()) { stopPersonTracking('Live cambiato durante il caricamento.'); return; }
       trackingStarting = false; trackingEnabled = true; trackingTarget = null; trackingMisses = 0; trackingLastVideoTime = -1;
+      trackingInferenceDelay = liveTransport === 'WebRTC' ? 650 : 950; trackingSlowInferences = 0;
       $('trackingToggle').disabled = false; $('trackingToggle').classList.add('active'); $('trackingToggle').setAttribute('aria-pressed', 'true'); $('trackingToggle').textContent = 'Ferma';
       $('trackingLiveState').hidden = false; $('trackingLiveState').querySelector('span').textContent = 'Ricerca persona…';
       updateTrackingAvailability(); recordActivity('ai', 'Inseguimento persona attivato', `${currentCamera().name}: rilevamento locale senza riconoscimento facciale.`);
@@ -713,13 +720,27 @@
     }
   }
 
-  function schedulePersonTracking(delay = 280) {
+  function schedulePersonTracking(delay = trackingInferenceDelay) {
     clearTimeout(trackingTimer);
     if (trackingEnabled) trackingTimer = window.setTimeout(runPersonTracking, delay);
   }
 
-  function normalizedPeople(result) {
-    const width = player.videoWidth || 1; const height = player.videoHeight || 1;
+  function prepareDetectionFrame() {
+    const videoWidth = player.videoWidth || 640; const videoHeight = player.videoHeight || 360;
+    const width = Math.min(384, videoWidth);
+    const height = Math.max(1, Math.round(width * videoHeight / videoWidth));
+    if (!trackingFrameCanvas) {
+      trackingFrameCanvas = document.createElement('canvas');
+      trackingFrameContext = trackingFrameCanvas.getContext('2d', { alpha:false });
+    }
+    if (trackingFrameCanvas.width !== width || trackingFrameCanvas.height !== height) {
+      trackingFrameCanvas.width = width; trackingFrameCanvas.height = height;
+    }
+    trackingFrameContext.drawImage(player, 0, 0, width, height);
+    return trackingFrameCanvas;
+  }
+
+  function normalizedPeople(result, width = player.videoWidth || 1, height = player.videoHeight || 1) {
     return (result?.detections || []).filter((detection) => detection.categories?.[0]?.categoryName === 'person').map((detection) => {
       const box = detection.boundingBox || {}; const category = detection.categories?.[0] || {};
       const x = Math.max(0, Number(box.originX || 0) / width); const y = Math.max(0, Number(box.originY || 0) / height);
@@ -787,8 +808,19 @@
     try {
       if (player.currentTime === trackingLastVideoTime) { schedulePersonTracking(120); return; }
       trackingLastVideoTime = player.currentTime;
-      const result = personDetector.detectForVideo(player, performance.now());
-      const detections = normalizedPeople(result); const target = chooseTrackingTarget(detections);
+      const frame = prepareDetectionFrame();
+      const inferenceStarted = performance.now();
+      const result = personDetector.detectForVideo(frame, inferenceStarted);
+      const inferenceDuration = performance.now() - inferenceStarted;
+      const baseDelay = liveTransport === 'WebRTC' ? 650 : 950;
+      trackingInferenceDelay = Math.min(3000, Math.max(baseDelay, Math.round(inferenceDuration * 4)));
+      trackingSlowInferences = inferenceDuration > 1200 ? trackingSlowInferences + 1 : 0;
+      if (trackingSlowInferences >= 2) {
+        stopPersonTracking();
+        toast('Inseguimento arrestato: il rilevamento locale è troppo lento su questo dispositivo.', 'error');
+        return;
+      }
+      const detections = normalizedPeople(result, frame.width, frame.height); const target = chooseTrackingTarget(detections);
       if (!target) {
         trackingMisses += 1; renderTrackingDetections(detections, null); $('trackingLiveState').querySelector('span').textContent = detections.length ? 'Soggetto perso · tocca una persona' : 'Ricerca persona…';
         if (trackingMisses >= 16) { stopPersonTracking('Persona persa: inseguimento arrestato.', true); return; }
