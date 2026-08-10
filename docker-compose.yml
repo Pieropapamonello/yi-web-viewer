@@ -1,333 +1,43 @@
-x-ffmpeg-reconnect: &ffmpeg-reconnect
-  entrypoint: ["/bin/sh", "/opt/camera/ffmpeg-reconnect.sh"]
-  volumes:
-    - ./scripts/ffmpeg-reconnect.sh:/opt/camera/ffmpeg-reconnect.sh:ro
-
 services:
-  mediamtx:
-    image: bluenviron/mediamtx:1.19.3
-    container_name: camera-mediamtx
+  fredi-control:
+    build:
+      context: ./gateway/onvif-api
+      dockerfile: Dockerfile.unified
+    image: fredi-control:local
+    container_name: fredi-control
     restart: unless-stopped
+    env_file:
+      - path: ./.env
+        required: false
+    environment:
+      IPC365_RTSP_URL: ${IPC365_RTSP_URL:?Set IPC365_RTSP_URL in .env}
+      FREDI_G1_RTSP_URL: ${FREDI_G1_RTSP_URL:?Set FREDI_G1_RTSP_URL in .env}
+      MEDIAMTX_CONFIG: /etc/mediamtx.yml
     volumes:
-      - ./mediamtx.yml:/mediamtx.yml:ro
+      - ./mediamtx.yml:/etc/mediamtx.yml:ro
+      - camera-gateway-data:/data
+      - ${ARCHIVE_HOST_DIR:-C:/mediaflow/registrazioni}:/archive
     ports:
-      # EasyProxy already uses host port 8888 in the existing Docker stack.
+      - "127.0.0.1:3001:3000"
       - "8890:8888"
       - "8891:8889"
       - "8189:8189/udp"
       - "8189:8189/tcp"
-    networks:
-      - proxy-net
-
-  # The IPC365 RTSP server returns a non-standard Transport header. FFmpeg
-  # accepts it and republishes normalized H.264 + browser-compatible AAC.
-  ipc365-bridge:
-    <<: *ffmpeg-reconnect
-    image: lscr.io/linuxserver/ffmpeg:latest
-    container_name: ipc365-bridge
-    restart: unless-stopped
-    depends_on:
-      - mediamtx
-    command:
-      - -hide_banner
-      - -loglevel
-      - warning
-      - -rtsp_transport
-      - tcp
-      - -i
-      - ${IPC365_RTSP_URL:?Set IPC365_RTSP_URL in .env before starting Docker}
-      - -map
-      - 0:v:0
-      - -map
-      - 0:a:0?
-      - -c:v
-      - copy
-      - -c:a
-      - aac
-      - -b:a
-      - 48k
-      - -ar
-      - "8000"
-      - -ac
-      - "1"
-      - -f
-      - rtsp
-      - -rtsp_transport
-      - tcp
-      - rtsp://camera-mediamtx:8554/ipc365
     healthcheck:
-      test: ["CMD-SHELL", "ffprobe -v error -rtsp_transport tcp -show_entries stream=codec_type -of csv=p=0 rtsp://camera-mediamtx:8554/ipc365 | grep -q video"]
-      interval: 15s
-      timeout: 8s
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health | grep -q '\"ok\":true' && ffprobe -v error -rtsp_transport tcp -show_entries stream=codec_type -of csv=p=0 rtsp://127.0.0.1:8554/ipc365 | grep -q video"]
+      interval: 30s
+      timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 20s
     networks:
-      - proxy-net
-
-  # Secondary low-bandwidth profile used by the web quality selector.
-  ipc365-bridge-low:
-    <<: *ffmpeg-reconnect
-    image: lscr.io/linuxserver/ffmpeg:latest
-    container_name: ipc365-bridge-low
-    restart: unless-stopped
-    depends_on:
-      ipc365-bridge:
-        condition: service_healthy
-    environment:
-      TZ: Europe/Rome
-    command:
-      - -hide_banner
-      - -loglevel
-      - warning
-      - -rtsp_transport
-      - tcp
-      - -i
-      - rtsp://camera-mediamtx:8554/ipc365
-      - -map
-      - 0:v:0
-      - -map
-      - 0:a:0?
-      - -vf
-      - "scale=-2:480,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf:text=%{localtime}:fontcolor=white:fontsize=22:box=1:boxcolor=black@0.70:boxborderw=8:x=12:y=h-th-12"
-      - -c:v
-      - libx264
-      - -preset
-      - veryfast
-      - -tune
-      - zerolatency
-      - -b:v
-      - 700k
-      - -maxrate
-      - 850k
-      - -bufsize
-      - 1400k
-      - -g
-      - "25"
-      - -sc_threshold
-      - "0"
-      - -c:a
-      - copy
-      - -f
-      - rtsp
-      - -rtsp_transport
-      - tcp
-      - rtsp://camera-mediamtx:8554/ipc365-low
-    networks:
-      - proxy-net
-
-  # Interactive profile: no video transcoding and browser-native Opus audio.
-  # MediaMTX exposes it through WHEP/WebRTC with sub-second transport latency.
-  ipc365-bridge-webrtc:
-    <<: *ffmpeg-reconnect
-    image: lscr.io/linuxserver/ffmpeg:latest
-    container_name: ipc365-bridge-webrtc
-    restart: unless-stopped
-    depends_on:
-      ipc365-bridge:
-        condition: service_healthy
-    command:
-      - -hide_banner
-      - -loglevel
-      - warning
-      - -fflags
-      - nobuffer
-      - -flags
-      - low_delay
-      - -rtsp_transport
-      - tcp
-      - -i
-      - rtsp://camera-mediamtx:8554/ipc365
-      - -map
-      - 0:v:0
-      - -map
-      - 0:a:0?
-      - -c:v
-      - copy
-      - -c:a
-      - libopus
-      - -application
-      - lowdelay
-      - -frame_duration
-      - "20"
-      - -b:a
-      - 32k
-      - -ar
-      - "48000"
-      - -ac
-      - "1"
-      - -f
-      - rtsp
-      - -rtsp_transport
-      - tcp
-      - rtsp://camera-mediamtx:8554/ipc365-webrtc
-    networks:
-      - proxy-net
-
-  # FREDI G1 custom-firmware RTSP stream and its browser profiles.
-  fredi-g1-bridge:
-    <<: *ffmpeg-reconnect
-    image: lscr.io/linuxserver/ffmpeg:latest
-    container_name: fredi-g1-bridge
-    restart: unless-stopped
-    depends_on:
-      - mediamtx
-    command:
-      - -hide_banner
-      - -loglevel
-      - warning
-      - -rtsp_transport
-      - tcp
-      # Exit a stale RTSP socket after ten seconds; the wrapper reconnects FFmpeg.
-      - -timeout
-      - "10000000"
-      - -i
-      - ${FREDI_G1_RTSP_URL:?Set FREDI_G1_RTSP_URL in .env before starting Docker}
-      - -map
-      - 0:v:0
-      - -an
-      - -c:v
-      - copy
-      - -f
-      - rtsp
-      - -rtsp_transport
-      - tcp
-      - rtsp://camera-mediamtx:8554/yi
-    networks:
-      - proxy-net
-
-  fredi-g1-bridge-low:
-    <<: *ffmpeg-reconnect
-    image: lscr.io/linuxserver/ffmpeg:latest
-    container_name: fredi-g1-bridge-low
-    restart: unless-stopped
-    depends_on:
-      - fredi-g1-bridge
-    environment:
-      TZ: Europe/Rome
-    command:
-      - -hide_banner
-      - -loglevel
-      - warning
-      - -rtsp_transport
-      - tcp
-      - -i
-      - rtsp://camera-mediamtx:8554/yi
-      - -map
-      - 0:v:0
-      - -vf
-      - "scale=-2:480,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf:text=%{localtime}:fontcolor=white:fontsize=22:box=1:boxcolor=black@0.70:boxborderw=8:x=12:y=h-th-12"
-      - -c:v
-      - libx264
-      - -preset
-      - veryfast
-      - -tune
-      - zerolatency
-      - -b:v
-      - 700k
-      - -maxrate
-      - 850k
-      - -bufsize
-      - 1400k
-      - -g
-      - "40"
-      - -sc_threshold
-      - "0"
-      - -an
-      - -f
-      - rtsp
-      - -rtsp_transport
-      - tcp
-      - rtsp://camera-mediamtx:8554/yi-low
-    networks:
-      - proxy-net
-
-  fredi-g1-bridge-webrtc:
-    <<: *ffmpeg-reconnect
-    image: lscr.io/linuxserver/ffmpeg:latest
-    container_name: fredi-g1-bridge-webrtc
-    restart: unless-stopped
-    depends_on:
-      - fredi-g1-bridge
-    command:
-      - -hide_banner
-      - -loglevel
-      - warning
-      - -fflags
-      - nobuffer
-      - -flags
-      - low_delay
-      - -rtsp_transport
-      - tcp
-      - -i
-      - rtsp://camera-mediamtx:8554/yi
-      - -map
-      - 0:v:0
-      - -an
-      - -c:v
-      - copy
-      - -f
-      - rtsp
-      - -rtsp_transport
-      - tcp
-      - rtsp://camera-mediamtx:8554/yi-webrtc
-    networks:
-      - proxy-net
-
-  # Continuous one-minute MP4 archive used by the searchable timeline.
-  ipc365-recorder:
-    image: lscr.io/linuxserver/ffmpeg:latest
-    container_name: ipc365-recorder
-    restart: unless-stopped
-    depends_on:
-      - ipc365-bridge-low
-    environment:
-      TZ: Europe/Rome
-    command:
-      - -hide_banner
-      - -loglevel
-      - warning
-      - -rtsp_transport
-      - tcp
-      - -i
-      - rtsp://camera-mediamtx:8554/ipc365-low
-      - -map
-      - 0:v:0
-      - -map
-      - 0:a:0?
-      - -c
-      - copy
-      - -f
-      - segment
-      - -segment_format
-      - mp4
-      - -segment_time
-      - "60"
-      - -segment_atclocktime
-      - "1"
-      - -reset_timestamps
-      - "1"
-      - -strftime
-      - "1"
-      - -movflags
-      - +faststart
-      - /archive/ipc365_%Y-%m-%d_%H-%M-%S.mp4
-    volumes:
-      - camera-archive:/archive
-    networks:
-      - proxy-net
-
-  archive-retention:
-    image: alpine:3.22
-    container_name: camera-archive-retention
-    restart: unless-stopped
-    command: ["sh", "-c", "while true; do find /archive -type f -name '*.mp4' -mtime +$${ARCHIVE_RETENTION_DAYS:-7} -delete; sleep 3600; done"]
-    environment:
-      ARCHIVE_RETENTION_DAYS: ${ARCHIVE_RETENTION_DAYS:-7}
-    volumes:
-      - camera-archive:/archive
+      proxy-net:
+        aliases:
+          - onvif-gateway
+          - camera-mediamtx
 
   web:
     image: nginx:1.29-alpine
+    profiles: ["local-web"]
     restart: unless-stopped
     volumes:
       - ./web:/usr/share/nginx/html:ro
@@ -336,8 +46,6 @@ services:
     networks:
       - proxy-net
 
-  # Optional HLS proxy. Do not expose it publicly without a strong API_PASSWORD.
-  # It proxies HLS already generated by MediaMTX; it does not accept RTSP directly.
   easyproxy:
     image: ghcr.io/realbestia1/easyproxy:latest
     profiles: ["proxy"]
@@ -350,10 +58,10 @@ services:
     networks:
       - proxy-net
 
+volumes:
+  camera-gateway-data:
+
 networks:
   proxy-net:
     external: true
     name: proxy-net
-
-volumes:
-  camera-archive:

@@ -60,7 +60,7 @@ Il live interattivo usa invece `http://localhost:8891/ipc365-webrtc/whep`: il pr
 
 Il servizio `ipc365-bridge-low` genera anche `http://localhost:8890/ipc365-low/index.m3u8` a 854x480. Il selettore qualità passa realmente tra questa sorgente e quella originale; non è un semplice controllo cosmetico.
 
-I sei bridge FFmpeg usano `scripts/ffmpeg-reconnect.sh`: se una camera chiude periodicamente RTSP, viene riavviato solo il processo FFmpeg senza far cadere il container. Il bridge IPC365 usa una singola sessione RTSP per audio e video e pubblica uno stato Docker `healthy` quando MediaMTX riceve il flusso.
+Lo stack camera viene eseguito in un solo container, `fredi-control`. Al suo interno `start-unified.sh` supervisiona gateway Node, MediaMTX, i sei processi FFmpeg e la retention dell'archivio. Se una camera chiude periodicamente RTSP viene riavviato soltanto il relativo processo FFmpeg, senza far cadere il servizio unico. IPC365 usa una sola sessione RTSP per audio e video e il container diventa `healthy` quando gateway e live sono disponibili.
 
 La FREDI G1 con firmware RTSP usa tre percorsi separati: `yi` (1080p), `yi-low` (480p) e `yi-webrtc` (WHEP). Con il proxy domestico configurato, gli URL della dashboard sono `https://camera.nelloonrender.duckdns.org/yi/index.m3u8` e `https://rtc.nelloonrender.duckdns.org/yi-webrtc/whep`.
 

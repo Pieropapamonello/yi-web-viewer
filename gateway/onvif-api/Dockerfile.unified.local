@@ -1,0 +1,16 @@
+FROM bluenviron/mediamtx:1.19.3 AS mediamtx
+FROM lscr.io/linuxserver/ffmpeg:latest AS ffmpeg-assets
+FROM mediaflow-onvif-gateway
+
+USER root
+
+COPY --from=mediamtx /mediamtx /usr/local/bin/mediamtx
+COPY --from=ffmpeg-assets /usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf /usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf
+COPY start-unified.sh /opt/fredi-control/start-unified.sh
+
+RUN mkdir -p /data /archive /opt/fredi-control \
+    && chown -R node:node /data /archive /opt/fredi-control
+
+USER node
+EXPOSE 3000 8888 8889 8189/tcp 8189/udp
+ENTRYPOINT ["/bin/sh", "/opt/fredi-control/start-unified.sh"]
