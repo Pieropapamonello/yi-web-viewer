@@ -9,6 +9,13 @@ const { spawn } = require('node:child_process');
 const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { Cam } = require('onvif');
+const {
+  actionKey,
+  featureCapabilities,
+  parseFrediCommands,
+  parseIpcCommands,
+  publicState,
+} = require('./device-actions');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.ONVIF_HOST || '192.168.1.50';
@@ -27,6 +34,10 @@ const IPC365_DEVICE_ID = process.env.IPC365_DEVICE_ID || '09f74b01';
 const FREDI_PTZ_HOST = process.env.FREDI_PTZ_HOST || '192.168.1.78';
 const FREDI_PTZ_PORT = Number(process.env.FREDI_PTZ_PORT || 23);
 const FREDI_PTZ_COMMAND = process.env.FREDI_PTZ_COMMAND || '/var/tmp/sd/ptzctl';
+const IPC365_DEVICE_COMMANDS = parseIpcCommands(process.env.IPC365_DEVICE_COMMANDS_JSON || '');
+const FREDI_DEVICE_COMMANDS = parseFrediCommands(process.env.FREDI_DEVICE_COMMANDS_JSON || '');
+const IPC365_DEVICE_FEATURES = featureCapabilities(IPC365_DEVICE_COMMANDS);
+const FREDI_DEVICE_FEATURES = featureCapabilities(FREDI_DEVICE_COMMANDS);
 const DASHBOARD_PASSWORD_ITERATIONS = Number(process.env.DASHBOARD_PASSWORD_ITERATIONS || 310000);
 const AUTH_SECRET = process.env.AUTH_SECRET || '';
 const VAULT_KEY = process.env.VAULT_KEY || '';
@@ -64,6 +75,8 @@ const aiUsage = new Map();
 let ipcTalkSocket = null;
 let ipcTalkSequence = 1;
 let frediTalkSocket = null;
+const ipcDeviceState = {};
+const frediDeviceState = {};
 const FREDI_TALK_PORT = Number(process.env.FREDI_TALK_PORT || 23457);
 const FREDI_TALK_SECRET = crypto.createHmac('sha256', API_TOKEN).update('fredi-talk-v1').digest('hex');
 const FREDI_SD_PORT = Number(process.env.FREDI_SD_PORT || 23458);
@@ -364,6 +377,72 @@ function ipc365Move(action, step, durationMs = MOVE_DURATION) {
 
 async function move(action, step, durationMs = MOVE_DURATION) {
   await ipc365Move(action === 'home' ? 'stop' : action, step, durationMs);
+}
+
+function executeIpcDeviceAction(feature, value) {
+  const key = actionKey(feature, value);
+  const spec = IPC365_DEVICE_COMMANDS[key];
+  if (!spec) return Promise.reject(new Error(`IPC365 action ${key} is not configured`));
+  const frame = Buffer.from(spec.frame);
+  if (spec.patchIds) {
+    ipc365Id(IPC365_SOURCE_ID, 'IPC365_SOURCE_ID').copy(frame, 20);
+    ipc365Id(IPC365_DEVICE_ID, 'IPC365_DEVICE_ID').copy(frame, 24);
+  }
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host:HOST, port:IPC365_PTZ_PORT });
+    let received = Buffer.alloc(0);
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      if (error) reject(error);
+      else { ipcDeviceState[feature] = value; resolve({ feature, value, acknowledged:true }); }
+    };
+    socket.setTimeout(spec.timeoutMs, () => finish(new Error(`IPC365 ${key} acknowledgement timeout`)));
+    socket.once('error', finish);
+    socket.on('data', (chunk) => {
+      received = Buffer.concat([received, chunk]).subarray(-65536);
+      if (received.indexOf(spec.expect) >= 0) finish();
+    });
+    socket.once('connect', () => socket.write(frame, (error) => { if (error) finish(error); }));
+  });
+}
+
+function executeFrediDeviceAction(feature, value) {
+  const key = actionKey(feature, value);
+  const configured = FREDI_DEVICE_COMMANDS[key];
+  if (!configured) return Promise.reject(new Error(`FREDI action ${key} is not configured`));
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host:FREDI_PTZ_HOST, port:FREDI_PTZ_PORT });
+    const marker = crypto.randomBytes(8).toString('hex');
+    const expression = new RegExp(`__FREDI_DEVICE_${marker}_(\\d+)__`);
+    const timers = [];
+    let output = '';
+    let settled = false;
+    const timeout = setTimeout(() => finish(new Error(`FREDI ${key} Telnet timeout`)), 6000);
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      timers.forEach(clearTimeout);
+      socket.destroy();
+      if (error) reject(error);
+      else { frediDeviceState[feature] = value; resolve({ feature, value, acknowledged:true }); }
+    };
+    socket.once('connect', () => {
+      timers.push(setTimeout(() => socket.write('root\r\n'), 120));
+      timers.push(setTimeout(() => socket.write('\r\n'), 320));
+      timers.push(setTimeout(() => socket.write(`(${configured}); code=$?; echo __FREDI_DEVICE_${marker}_$code__\r\n`), 520));
+    });
+    socket.on('data', (chunk) => {
+      output += chunk.toString('latin1').replace(/[^\x09\x0a\x0d\x20-\x7e]/g, '');
+      const result = output.match(expression);
+      if (result) finish(result[1] === '0' ? null : new Error(`FREDI ${key} exited with code ${result[1]}`));
+    });
+    socket.once('error', finish);
+    socket.once('close', () => { if (!settled) finish(new Error(`FREDI ${key} connection closed`)); });
+  });
 }
 
 async function gotoPreset(index) {
@@ -1402,12 +1481,19 @@ const server = http.createServer(async (request, response) => {
       else return send(response, 400, { error:'Unsupported talk action' }, headers);
       return send(response, 200, { ok:true, action:body.action }, headers);
     }
+    if (pathname === '/fredi/api/device/state' && request.method === 'GET') {
+      return send(response, 200, { ok:true, features:FREDI_DEVICE_FEATURES, state:publicState(frediDeviceState) }, headers);
+    }
+    if (pathname === '/fredi/api/device/action' && request.method === 'POST') {
+      const result = await executeFrediDeviceAction(cleanText(body.feature, 32), cleanText(body.value, 32));
+      return send(response, 200, { ok:true, ...result, state:publicState(frediDeviceState) }, headers);
+    }
     if (pathname === '/fredi/api/capabilities' && request.method === 'GET') {
       let sdReady = false; try { sdReady = (await frediSdFetch('/health')).ok; } catch { /* recorder helper unavailable */ }
       return send(response, 200, {
         ok:true,
         protocol:'rts3903n-telnet',
-        features:{ liveVideo:true, liveAudio:false, ptz:true, snapshot:true, localRecording:true, orientation:true, light:false, guard:false, talk:true, sdRecording:sdReady, sdPlayback:sdReady, cloudPlayback:false },
+        features:{ liveVideo:true, liveAudio:false, ptz:true, snapshot:true, localRecording:true, orientation:true, ...FREDI_DEVICE_FEATURES, talk:true, sdRecording:sdReady, sdPlayback:sdReady, cloudPlayback:false },
       }, headers);
     }
     if (pathname === '/api/ptz' && request.method === 'POST') {
@@ -1424,6 +1510,13 @@ const server = http.createServer(async (request, response) => {
       else return send(response, 400, { error:'Unsupported talk action' }, headers);
       return send(response, 200, { ok:true, action:body.action }, headers);
     }
+    if (pathname === '/api/device/state' && request.method === 'GET') {
+      return send(response, 200, { ok:true, features:IPC365_DEVICE_FEATURES, state:publicState(ipcDeviceState) }, headers);
+    }
+    if (pathname === '/api/device/action' && request.method === 'POST') {
+      const result = await executeIpcDeviceAction(cleanText(body.feature, 32), cleanText(body.value, 32));
+      return send(response, 200, { ok:true, ...result, state:publicState(ipcDeviceState) }, headers);
+    }
     if (pathname === '/api/capabilities' && request.method === 'GET') {
       return send(response, 200, {
         ok:true,
@@ -1435,8 +1528,7 @@ const server = http.createServer(async (request, response) => {
           snapshot:true,
           localRecording:true,
           orientation:true,
-          light:false,
-          guard:false,
+          ...IPC365_DEVICE_FEATURES,
           talk:true,
           sdPlayback:false,
           cloudPlayback:false,

@@ -2,6 +2,10 @@
 
 Una web app multiutente senza pubblicita' per vedere e configurare telecamere HLS/RTSP/ONVIF. La pagina statica gira su Render; account e configurazioni cifrate sono gestiti dal gateway domestico.
 
+Le interfacce osservate nelle app ufficiali ZKlink e IPC360 Pro, insieme ai
+limiti tra funzioni SDK e comandi LAN realmente verificati, sono documentate in
+[`docs/apk-interoperability.md`](docs/apk-interoperability.md).
+
 ## Funzioni principali
 
 - registrazione pubblica e vault separato per account;
@@ -13,6 +17,8 @@ Una web app multiutente senza pubblicita' per vedere e configurare telecamere HL
 - Smart Vision opzionale: analisi volontaria di un fotogramma con Groq o xAI, senza esporre la chiave al browser e senza archiviare l'immagine nel gateway;
 - inseguimento persona volontario nel browser con MediaPipe, riquadro selezionabile e impulsi PTZ brevi su live WebRTC;
 - controlli PTZ IPC365 verificati tramite confronto automatico dei fotogrammi;
+- controlli capability-aware per luce, visione notturna, sirena, tracking nativo,
+  zoom ottico e modalità microSD, abilitati solo dopo una risposta verificata;
 - PTZ reattivo con comando alla pressione/swipe, tre intensità, frecce da tastiera, feedback aptico e recupero immediato del bordo live;
 - data e orologio con secondi sovrapposti al live;
 - rilevamento locale delle variazioni d'immagine e cronologia giornaliera con indicatori colorati;

@@ -5,7 +5,8 @@
   "description": "Authenticated ONVIF PTZ gateway for the IPC365 camera",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "onvif": "0.8.1"

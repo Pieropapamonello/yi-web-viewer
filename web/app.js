@@ -77,6 +77,10 @@
   let talkQueue = Promise.resolve();
   let talking = false;
   let talkRequested = false;
+  let deviceFeatures = {};
+  let deviceState = { light:'unknown', nightVision:'unknown', alarm:'unknown', tracking:'unknown', zoom:'stop', sdRecording:'unknown' };
+  let deviceActionBusy = false;
+  let zoomStopRequested = false;
 
   function safeJson(value, fallback) {
     try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
@@ -362,10 +366,94 @@
     } catch { /* Operational actions must not fail because timeline sync failed. */ }
   }
 
+  function updateDeviceControls() {
+    const labels = { off:'Spenta', on:'Accesa', auto:'Automatica', unknown:'Stato da leggere' };
+    const configure = (id, value, enabled, activeValue = 'on') => {
+      const button = $(id); if (!button) return;
+      button.disabled = !enabled || deviceActionBusy;
+      button.classList.toggle('active', enabled && value === activeValue);
+      button.querySelector('small').textContent = enabled ? (labels[value] || value) : 'Non configurata';
+    };
+    configure('lightFeature', deviceState.light, deviceFeatures.light);
+    configure('nightVisionFeature', deviceState.nightVision, deviceFeatures.nightVision);
+    configure('guardFeature', deviceState.alarm, deviceFeatures.guard);
+    configure('nativeTrackingFeature', deviceState.tracking, deviceFeatures.nativeTracking);
+    $('opticalZoom').hidden = !deviceFeatures.opticalZoom;
+    $('opticalZoom').querySelectorAll('button').forEach((button) => { button.disabled = !deviceFeatures.opticalZoom || deviceActionBusy; });
+    $('nativeSdMode').disabled = !deviceFeatures.nativeSdRecording || deviceActionBusy;
+    if (['off', 'continuous', 'event'].includes(deviceState.sdRecording)) $('nativeSdMode').value = deviceState.sdRecording;
+  }
+
+  async function deviceFetch(path, options = {}) {
+    const camera = currentCamera();
+    if (!camera?.apiBaseUrl || !camera.apiToken) throw new Error('Gateway dispositivo non configurato.');
+    const response = await fetch(`${camera.apiBaseUrl.replace(/\/$/, '')}${path}`, {
+      cache:'no-store',
+      ...options,
+      headers:{ ...(options.headers || {}), Authorization:`Bearer ${camera.apiToken}` },
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.detail || result.error || 'Comando dispositivo rifiutato');
+    return result;
+  }
+
+  async function loadDeviceState(cameraId) {
+    if (!Object.values(deviceFeatures).some(Boolean)) return updateDeviceControls();
+    try {
+      const result = await deviceFetch('/api/device/state');
+      if (cameraId !== activeId) return;
+      deviceFeatures = { ...deviceFeatures, ...(result.features || {}) };
+      deviceState = { ...deviceState, ...(result.state || {}) };
+    } catch { /* Capabilities stay usable; state remains explicitly unknown. */ }
+    updateDeviceControls();
+  }
+
+  async function sendDeviceAction(feature, value, quiet = false) {
+    if (deviceActionBusy) return;
+    deviceActionBusy = true; updateDeviceControls();
+    try {
+      const result = await deviceFetch('/api/device/action', { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ feature, value }) });
+      deviceState = { ...deviceState, ...(result.state || {}), [feature]:value };
+      if (!quiet) toast(`${feature}: ${value}. Comando confermato dalla camera.`, 'success');
+      recordActivity('device', 'Comando dispositivo', `${feature}: ${value}`);
+      return result;
+    } catch (error) {
+      if (!quiet) toast(error.message, 'error');
+      throw error;
+    } finally { deviceActionBusy = false; updateDeviceControls(); }
+  }
+
+  function cycleDeviceFeature(feature) {
+    if (feature === 'light' || feature === 'nightVision') {
+      const supportsAuto = feature === 'light' ? deviceFeatures.lightAuto : deviceFeatures.nightVisionAuto;
+      const values = supportsAuto ? ['off', 'on', 'auto'] : ['off', 'on'];
+      const current = values.indexOf(deviceState[feature]);
+      return sendDeviceAction(feature, values[(current + 1) % values.length]).catch(() => {});
+    }
+    return sendDeviceAction(feature, deviceState[feature] === 'on' ? 'off' : 'on').catch(() => {});
+  }
+
+  async function sendOpticalZoom(value) {
+    if (!deviceFeatures.opticalZoom) return;
+    if (value === 'stop' && deviceActionBusy) { zoomStopRequested = true; return; }
+    try { await sendDeviceAction('zoom', value, value === 'stop'); }
+    catch { return; }
+    if (value !== 'stop' && zoomStopRequested) {
+      zoomStopRequested = false;
+      sendDeviceAction('zoom', 'stop', true).catch(() => {});
+    }
+  }
+
+  function changeNativeSdMode() {
+    const previous = deviceState.sdRecording;
+    sendDeviceAction('sdRecording', $('nativeSdMode').value).catch(() => { if (['off', 'continuous', 'event'].includes(previous)) $('nativeSdMode').value = previous; });
+  }
+
   async function loadCapabilities(camera) {
     $('capabilityState').textContent = 'Verifica…';
     $('talkFeature').disabled = true;
     $('talkFeature').querySelector('small').textContent = 'Verifica gateway';
+    deviceFeatures = {}; deviceState = { light:'unknown', nightVision:'unknown', alarm:'unknown', tracking:'unknown', zoom:'stop', sdRecording:'unknown' }; updateDeviceControls();
     if (!camera?.apiBaseUrl || !camera.apiToken) { $('capabilityState').textContent = 'Locale'; return; }
     try {
       const response = await fetch(`${camera.apiBaseUrl.replace(/\/$/, '')}/api/capabilities`, { cache:'no-store', headers:{ Authorization:`Bearer ${camera.apiToken}` } });
@@ -375,6 +463,7 @@
       $('talkFeature').disabled = !result.features?.talk;
       $('talkFeature').querySelector('small').textContent = result.features?.talk ? 'Tieni premuto per parlare' : 'Non disponibile';
       $('capabilityHint').textContent = result.features?.talk ? 'Live, audio, PTZ, snapshot, registrazione e audio bidirezionale disponibili.' : 'Live, PTZ, snapshot e registrazione disponibili. Il microfono dipende dal driver della camera.';
+      deviceFeatures = result.features || {}; updateDeviceControls(); loadDeviceState(camera.id);
       const sdReady = Boolean(result.features?.sdPlayback); sdAvailable = sdReady;
       $('sdSource').disabled = !sdReady; $('sdRecordToggle').disabled = !sdReady; $('sdRefresh').disabled = !sdReady; $('sdRetention').disabled = !sdReady; $('sdSnapshotStore').disabled = !sdReady;
       $('sdRecordingState').textContent = sdReady ? 'Pronta' : 'Non disponibile';
@@ -810,7 +899,7 @@
   function updateFocusedCamera(camera) {
     disconnectStream();
     archiveSource = 'local'; sdRecording = false; sdAvailable = false; sdStorage = { total:0, free:0, max:0, reserve:0 };
-    $('sdSource').classList.remove('active'); $('localSource').classList.add('active'); $('sdSource').disabled = true; $('sdRecordToggle').disabled = true; $('sdRefresh').disabled = true; $('sdRetention').disabled = true; $('sdSnapshotStore').disabled = true; $('sdDeleteClip').disabled = true;
+    $('sdSource').classList.remove('active'); $('localSource').classList.add('active'); $('sdSource').disabled = true; $('sdRecordToggle').disabled = true; $('sdRefresh').disabled = true; $('sdRetention').disabled = true; $('nativeSdMode').disabled = true; $('sdSnapshotStore').disabled = true; $('sdDeleteClip').disabled = true;
     selectedQuality = 'auto';
     $('cameraName').textContent = camera.name;
     $('cameraMeta').textContent = [camera.model, camera.location].filter(Boolean).join(' · ') || 'Modello e posizione non specificati';
@@ -1802,6 +1891,15 @@
     $('zoomReset').addEventListener('click', () => setDigitalZoom(1));
     $('zoomIn').addEventListener('click', () => setDigitalZoom((currentCamera()?.digitalZoom || 1) + .25));
     $('stage').addEventListener('wheel', (event) => { if (!$('stage').classList.contains('playing')) return; event.preventDefault(); setDigitalZoom((currentCamera()?.digitalZoom || 1) + (event.deltaY < 0 ? .25 : -.25)); }, { passive:false });
+    $('lightFeature').addEventListener('click', () => cycleDeviceFeature('light'));
+    $('nightVisionFeature').addEventListener('click', () => cycleDeviceFeature('nightVision'));
+    $('guardFeature').addEventListener('click', () => cycleDeviceFeature('alarm'));
+    $('nativeTrackingFeature').addEventListener('click', () => cycleDeviceFeature('tracking'));
+    document.querySelectorAll('[data-device-zoom]').forEach((button) => {
+      button.addEventListener('pointerdown', (event) => { event.preventDefault(); sendOpticalZoom(button.dataset.deviceZoom); });
+      if (button.dataset.deviceZoom !== 'stop') ['pointerup', 'pointercancel', 'pointerleave'].forEach((name) => button.addEventListener(name, () => sendOpticalZoom('stop')));
+    });
+    $('nativeSdMode').addEventListener('change', changeNativeSdMode);
     $('notificationMaster').addEventListener('click', toggleNotifications);
     ['notifyPerson','notifyAnimal','notifyVehicle'].forEach((id) => $(id).addEventListener('change', saveNotificationTypes));
     $('fullButton').addEventListener('click', () => $('stage').requestFullscreen?.());

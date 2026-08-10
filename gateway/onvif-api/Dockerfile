@@ -4,7 +4,7 @@ RUN apk add --no-cache ffmpeg
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev && npm cache clean --force
-COPY server.js ./
+COPY server.js device-actions.js ./
 
 RUN mkdir -p /data && chown node:node /data
 
