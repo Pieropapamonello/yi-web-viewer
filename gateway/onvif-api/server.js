@@ -687,6 +687,7 @@ function cleanPreferences(value) {
   return {
     theme:['dark', 'light', 'system'].includes(input.theme) ? input.theme : 'dark',
     cameraView:['focus', 'grid'].includes(input.cameraView) ? input.cameraView : 'focus',
+    workspaceView:['live', 'timeline', 'ai', 'archive'].includes(input.workspaceView) ? input.workspaceView : 'live',
     compact:Boolean(input.compact),
     cameraSort:['custom', 'name', 'location'].includes(input.cameraSort) ? input.cameraSort : 'custom',
     favoritesOnly:Boolean(input.favoritesOnly),
@@ -990,9 +991,11 @@ function aiText(result) {
   return typeof choice === 'string' ? choice.trim() : '';
 }
 
-async function analyzeCameraFrame(imageUrl, cameraName) {
+async function analyzeCameraFrame(imageUrl, cameraName, question = '') {
+  const request = cleanText(question, 400, 'Controlla la sicurezza della scena e segnala gli elementi rilevanti visibili.');
   const prompt = `Analizza questo singolo fotogramma della telecamera “${cleanText(cameraName, 80, 'Camera')}”. ` +
     'Descrivi esclusivamente ciò che è realmente visibile, senza identificare persone, dedurre dati sensibili o inventare eventi. ' +
+    `Richiesta dell’utente: ${request} ` +
     'Rispondi in italiano, in modo conciso, con le sezioni SCENA, MOVIMENTO, ELEMENTI RILEVANTI e ATTENZIONE. ' +
     'In ATTENZIONE indica basso, medio o alto e spiega il motivo; chiarisci quando un singolo fotogramma non basta per stabilire un movimento o un pericolo.';
   const response = await fetch(`${AI_API_BASE_URL}/responses`, {
@@ -1416,7 +1419,8 @@ const server = http.createServer(async (request, response) => {
       const vault = decryptVault(account);
       const camera = vault.cameras.find((item) => item.id === cleanText(body.cameraId, 80));
       if (!camera) return send(response, 404, { error:'Camera not found' }, headers);
-      const analysis = await analyzeCameraFrame(image, camera.name);
+      const question = cleanText(body.question, 400);
+      const analysis = await analyzeCameraFrame(image, camera.name, question);
       return send(response, 200, { ok:true, analysis, model:AI_MODEL, analyzedAt:new Date().toISOString() }, headers);
     } catch (error) {
       const invalid = /^(Only a JPEG|Image is too large|Request body too large)/.test(error.message);

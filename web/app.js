@@ -12,7 +12,7 @@
   let account = null;
   let cameras = [];
   let events = [];
-  let preferences = { theme:'dark', cameraView:'focus', compact:false, cameraSort:'custom', favoritesOnly:false };
+  let preferences = { theme:'dark', cameraView:'focus', workspaceView:'live', compact:false, cameraSort:'custom', favoritesOnly:false };
   let activeId = '';
   let editingId = '';
   let authMode = 'login';
@@ -55,6 +55,8 @@
   let sdAvailable = false;
   let sdStorage = { total:0, free:0, max:0, reserve:0 };
   let mediaFilter = 'all';
+  let timelineFilter = 'all';
+  let timelineSearch = '';
   let mediaViewerClip = null;
   let cloud = null;
   let aiReady = false;
@@ -584,9 +586,17 @@
       }
       context.drawImage(player, 0, 0, canvas.width, canvas.height);
       const image = canvas.toDataURL('image/jpeg', .72);
+      const preset = $('aiPromptPreset').value;
+      const questions = {
+        security:'Controlla la sicurezza della scena: accessi aperti, persone, animali, veicoli, pacchi o possibili anomalie visibili.',
+        describe:'Descrivi con precisione la scena e gli elementi realmente visibili.',
+        objects:'Conta esclusivamente persone, animali e veicoli chiaramente visibili.',
+      };
+      const question = preset === 'custom' ? $('aiQuestion').value.trim() : questions[preset];
+      if (preset === 'custom' && !question) throw new Error('Scrivi prima una domanda per Smart Vision.');
       const result = await gatewayFetch('/api/ai/analyze', {
         method:'POST', headers:{ 'Content-Type':'application/json' },
-        body:JSON.stringify({ cameraId:camera.id, image }),
+        body:JSON.stringify({ cameraId:camera.id, image, question }),
       });
       $('aiResult').textContent = `${result.analysis}\n\nAnalizzato: ${new Date(result.analyzedAt).toLocaleString('it-IT')}`;
       $('aiState').textContent = 'Completata';
@@ -1186,7 +1196,15 @@
     const rail = $('timelineRail');
     if (!rail) return;
     const selected = $('timelineDate').value || localDateKey();
-    const dayEvents = events.filter((item) => localDateKey(new Date(item.createdAt)) === selected);
+    const cameraName = currentCamera()?.name?.toLowerCase() || '';
+    const dayEventsAll = events.filter((item) => localDateKey(new Date(item.createdAt)) === selected && (!cameraName || `${item.title} ${item.detail}`.toLowerCase().includes(cameraName) || !item.detail));
+    const dayEvents = dayEventsAll.filter((item) => {
+      const haystack = `${item.title} ${item.detail}`.toLowerCase();
+      const matchesSearch = !timelineSearch || haystack.includes(timelineSearch);
+      const type = String(item.type || '').toLowerCase();
+      const matchesType = timelineFilter === 'all' || (timelineFilter === 'motion' && /motion|movimento|detect/.test(`${type} ${haystack}`)) || (timelineFilter === 'ai' && /ai|analisi|rilev/.test(`${type} ${haystack}`)) || (timelineFilter === 'clip' && /clip|snapshot|registr/.test(`${type} ${haystack}`)) || (timelineFilter === 'error' && /error|errore/.test(`${type} ${haystack}`));
+      return matchesSearch && matchesType;
+    });
     const clipMarkup = archiveClips.flatMap((clip, index) => {
       if (clip.kind === 'snapshot') return [];
       const start = new Date(clip.start);
@@ -1210,7 +1228,59 @@
       const date = new Date(item.createdAt);
       $('timelineSelection').innerHTML = `<b>${escapeHtml(date.toLocaleTimeString('it-IT'))} · ${escapeHtml(item.title)}</b><br>${escapeHtml(item.detail)}`;
     }));
+    renderTimelineInsights(dayEventsAll);
     if (!dayEvents.length && !archiveClips.length) $('timelineSelection').textContent = 'Nessuna registrazione o evento in questa giornata.';
+  }
+
+  function renderTimelineInsights(dayEvents = []) {
+    const snapshots = archiveClips.filter((clip) => clip.kind === 'snapshot').length;
+    const videos = archiveClips.length - snapshots;
+    const hourly = Array(24).fill(0);
+    dayEvents.forEach((item) => { const date = new Date(item.createdAt); if (!Number.isNaN(date.getTime())) hourly[date.getHours()] += 1; });
+    archiveClips.forEach((clip) => { const date = new Date(clip.start); if (!Number.isNaN(date.getTime())) hourly[date.getHours()] += 1; });
+    const peakCount = Math.max(...hourly);
+    const peakHour = peakCount ? hourly.indexOf(peakCount) : -1;
+    $('insightEvents').textContent = String(dayEvents.length);
+    $('insightClips').textContent = String(videos);
+    $('insightSnapshots').textContent = String(snapshots);
+    $('insightPeak').textContent = peakHour >= 0 ? `${String(peakHour).padStart(2, '0')}:00` : '—';
+    $('insightPeak').disabled = peakHour < 0;
+    const notable = dayEvents.filter((item) => /motion|ai|error|movimento|rilev|errore/i.test(`${item.type} ${item.title}`)).length;
+    const pieces = [`${dayEvents.length} eventi`, `${videos} clip`, `${snapshots} snapshot`];
+    if (notable) pieces.push(`${notable} rilevamenti o anomalie`);
+    if (peakHour >= 0) pieces.push(`picco tra le ${String(peakHour).padStart(2, '0')}:00 e le ${String(peakHour + 1).padStart(2, '0')}:00`);
+    $('timelineSummary').querySelector('span').textContent = `${pieces.join(' · ')}. Riepilogo calcolato localmente: nessun filmato è stato inviato all’IA.`;
+    $('insightPeak').dataset.seconds = peakHour >= 0 ? String(peakHour * 3600) : '';
+  }
+
+  function setWorkspaceView(view, persist = true) {
+    const allowed = ['live','timeline','ai','archive'];
+    const selected = allowed.includes(view) ? view : 'live';
+    preferences.workspaceView = selected;
+    document.body.classList.remove(...allowed.map((item) => `workspace-view-${item}`));
+    document.body.classList.add(`workspace-view-${selected}`);
+    document.querySelectorAll('[data-workspace-view]').forEach((button) => button.classList.toggle('active', button.dataset.workspaceView === selected));
+    if (selected === 'timeline' || selected === 'archive') loadArchive(activeId);
+    if (persist) persistPreferences();
+  }
+
+  async function applyScene(scene) {
+    const camera = currentCamera(); if (!camera) return;
+    if (scene === 'home') {
+      if ('Notification' in window && Notification.permission !== 'granted' && await Notification.requestPermission() !== 'granted') return toast('Autorizza le notifiche nel browser.', 'error');
+      camera.notificationsEnabled = true; camera.notifyPerson = true; camera.notifyAnimal = true; camera.notifyVehicle = true; stopPersonTracking();
+    } else if (scene === 'quiet') {
+      camera.notificationsEnabled = false; stopPersonTracking();
+    } else if (scene === 'follow') {
+      camera.notificationsEnabled = true; camera.notifyPerson = true; camera.notifyAnimal = false; camera.notifyVehicle = false;
+    }
+    updateNotificationControls(camera);
+    try {
+      await persistCameras();
+      if (scene === 'follow' && !trackingEnabled) await togglePersonTracking();
+      await recordActivity('scene', 'Scenario applicato', `${camera.name}: ${scene === 'home' ? 'Casa' : scene === 'quiet' ? 'Privacy' : 'Segui persona'}. Nessuna registrazione automatica avviata.`);
+      toast('Scenario applicato. Le registrazioni restano manuali.', 'success');
+    } catch (error) { toast(error.message, 'error'); }
   }
 
   function archiveUrl(clip) {
@@ -1870,6 +1940,7 @@
     $('themeSelect').value = preferences.theme; $('viewSelect').value = preferences.cameraView; $('compactInput').checked = Boolean(preferences.compact);
     $('cameraSort').value = preferences.cameraSort || 'custom'; $('favoriteFilter').setAttribute('aria-pressed', String(Boolean(preferences.favoritesOnly)));
     const meta = document.querySelector('meta[name="theme-color"]'); meta.content = theme === 'light' ? '#edf3f9' : '#07111f';
+    setWorkspaceView(preferences.workspaceView || 'live', false);
   }
 
   async function persistPreferences() {
@@ -1938,6 +2009,8 @@
       $('advancedToggle').setAttribute('aria-expanded', String(expanded));
       $('advancedToggle').textContent = expanded ? 'Vista semplice' : 'Altre funzioni';
     });
+    document.querySelectorAll('[data-workspace-view]').forEach((button) => button.addEventListener('click', () => setWorkspaceView(button.dataset.workspaceView)));
+    document.querySelectorAll('[data-scene]').forEach((button) => button.addEventListener('click', () => applyScene(button.dataset.scene)));
     document.querySelectorAll('[data-ptz]').forEach((button) => {
       button.addEventListener('pointerdown', (event) => startPtzHold(event, button));
       ['pointerup','pointercancel','lostpointercapture'].forEach((name) => button.addEventListener(name, stopPtzHold));
@@ -1945,6 +2018,7 @@
     document.querySelectorAll('[data-ptz-step]').forEach((button) => button.addEventListener('click', () => { ptzStep = Number(button.dataset.ptzStep); document.querySelectorAll('[data-ptz-step]').forEach((item) => item.classList.toggle('active', item === button)); }));
     $('snapshotButton').addEventListener('click', snapshot); $('recordButton').addEventListener('click', toggleRecording);
     $('aiAnalyze').addEventListener('click', analyzeCurrentFrame);
+    $('aiPromptPreset').addEventListener('change', () => { $('aiQuestion').hidden = $('aiPromptPreset').value !== 'custom'; if (!$('aiQuestion').hidden) $('aiQuestion').focus(); });
     $('trackingToggle').addEventListener('click', togglePersonTracking);
     $('trackingSensitivity').addEventListener('change', () => trackingEnabled && toast('Sensibilità inseguimento aggiornata.', 'success'));
     $('muteButton').addEventListener('click', () => { player.muted = !player.muted; $('muteButton').classList.toggle('unmuted', !player.muted); });
@@ -1977,6 +2051,9 @@
       if (camera?.streamUrl) { disconnectStream(); connectStream(camera); }
     });
     $('timelineDate').addEventListener('change', () => loadArchive(activeId));
+    document.querySelectorAll('[data-timeline-filter]').forEach((button) => button.addEventListener('click', () => { timelineFilter = button.dataset.timelineFilter; document.querySelectorAll('[data-timeline-filter]').forEach((item) => item.classList.toggle('active', item === button)); renderPlaybackTimeline(); }));
+    $('timelineSearch').addEventListener('input', () => { timelineSearch = $('timelineSearch').value.trim().toLowerCase(); renderPlaybackTimeline(); });
+    $('insightPeak').addEventListener('click', () => { const seconds = Number($('insightPeak').dataset.seconds); if (!Number.isFinite(seconds)) return; $('timelineScrubber').value = String(seconds); updateTimelineTime(seconds); seekArchiveSeconds(seconds); });
     $('timelineRail').addEventListener('click', seekTimeline);
     $('timelineScrubber').addEventListener('input', () => updateTimelineTime());
     $('timelineScrubber').addEventListener('change', () => seekArchiveSeconds(Number($('timelineScrubber').value)));

@@ -82,6 +82,19 @@ function extractImage(payload: unknown): string {
   throw new HttpError(400, "Image is required");
 }
 
+function extractQuestion(payload: unknown): string {
+  if (!record(payload) || !Array.isArray(payload.input)) return "";
+  for (const message of payload.input) {
+    if (!record(message) || !Array.isArray(message.content)) continue;
+    for (const item of message.content) {
+      if (record(item) && item.type === "input_text" && typeof item.text === "string") {
+        return item.text.trim().slice(0, 1_200);
+      }
+    }
+  }
+  return "";
+}
+
 function hexBytes(value: string): Uint8Array | null {
   if (!/^[a-f0-9]{64}$/i.test(value)) return null;
   const bytes = new Uint8Array(32);
@@ -117,11 +130,13 @@ async function analyze(request: Request, env: Env): Promise<Response> {
 
   const payload = await readBoundedJson(request);
   const image = extractImage(payload);
+  const requestedAnalysis = extractQuestion(payload);
   const result = await env.AI.run(MODEL, {
     task: "query",
     image,
     question:
       "Analizza questo fotogramma di videosorveglianza. Rispondi in italiano e descrivi soltanto ciò che è realmente visibile. " +
+      (requestedAnalysis ? `Segui questa richiesta, se compatibile con le regole di sicurezza: ${requestedAnalysis} ` : "") +
       "Usa esattamente le sezioni SCENA, RILEVAMENTI e ATTENZIONE. In RILEVAMENTI cita esclusivamente categorie che risultano " +
       "chiaramente visibili tra persone, animali, veicoli e pacchi/oggetti lasciati, indicando il numero osservabile; non presumere " +
       "che una categoria sia presente. Se non vedi elementi di una categoria, scrivi che non è rilevata. In ATTENZIONE assegna livello BASSO, MEDIO o ALTO con una " +
