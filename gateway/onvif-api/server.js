@@ -78,6 +78,8 @@ let frediTalkSocket = null;
 const ipcDeviceState = {};
 const frediDeviceState = {};
 const FREDI_TALK_PORT = Number(process.env.FREDI_TALK_PORT || 23457);
+const FREDI_TALK_DEVICE = Math.max(0, Number(process.env.FREDI_TALK_DEVICE || 1));
+const IPC365_TALK_ENABLED = String(process.env.IPC365_TALK_ENABLED || '').toLowerCase() === 'true';
 const FREDI_TALK_SECRET = crypto.createHmac('sha256', API_TOKEN).update('fredi-talk-v1').digest('hex');
 const FREDI_SD_PORT = Number(process.env.FREDI_SD_PORT || 23458);
 const FREDI_SD_SECRET = crypto.createHmac('sha256', API_TOKEN).update('fredi-sd-v1').digest('hex');
@@ -128,6 +130,16 @@ function stopIpcTalk() {
   ipcTalkSocket?.end(); ipcTalkSocket = null;
 }
 
+function tcpReady(host, port, timeoutMs = 900) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host, port });
+    const finish = (ready) => { socket.destroy(); resolve(ready); };
+    socket.setTimeout(timeoutMs, () => finish(false));
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+  });
+}
+
 function launchFrediTalkDaemon() {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host:FREDI_PTZ_HOST, port:FREDI_PTZ_PORT });
@@ -136,7 +148,7 @@ function launchFrediTalkDaemon() {
     socket.once('connect', () => {
       timers.push(setTimeout(() => socket.write('root\r\n'), 120));
       timers.push(setTimeout(() => socket.write('\r\n'), 320));
-      timers.push(setTimeout(() => socket.write(`killall talkd 2>/dev/null; /var/tmp/sd/talkd '${FREDI_TALK_SECRET}' ${FREDI_TALK_PORT} 0 </dev/null >/var/tmp/sd/talkd.log 2>&1 &\r\n`), 520));
+      timers.push(setTimeout(() => socket.write(`killall talkd 2>/dev/null; /var/tmp/sd/talkd '${FREDI_TALK_SECRET}' ${FREDI_TALK_PORT} ${FREDI_TALK_DEVICE} </dev/null >/var/tmp/sd/talkd.log 2>&1 &\r\n`), 520));
       timers.push(setTimeout(() => { clearTimeout(timeout); socket.destroy(); resolve(); }, 1400));
     });
     socket.once('error', (error) => { clearTimeout(timeout); timers.forEach(clearTimeout); reject(error); });
@@ -1490,10 +1502,11 @@ const server = http.createServer(async (request, response) => {
     }
     if (pathname === '/fredi/api/capabilities' && request.method === 'GET') {
       let sdReady = false; try { sdReady = (await frediSdFetch('/health')).ok; } catch { /* recorder helper unavailable */ }
+      const talkReady = await tcpReady(FREDI_PTZ_HOST, FREDI_TALK_PORT);
       return send(response, 200, {
         ok:true,
         protocol:'rts3903n-telnet',
-        features:{ liveVideo:true, liveAudio:false, ptz:true, snapshot:true, localRecording:true, orientation:true, ...FREDI_DEVICE_FEATURES, talk:true, sdRecording:sdReady, sdPlayback:sdReady, cloudPlayback:false },
+        features:{ liveVideo:true, liveAudio:false, ptz:true, snapshot:true, localRecording:true, orientation:true, ...FREDI_DEVICE_FEATURES, talk:talkReady, sdRecording:sdReady, sdPlayback:sdReady, cloudPlayback:false },
       }, headers);
     }
     if (pathname === '/api/ptz' && request.method === 'POST') {
@@ -1504,6 +1517,7 @@ const server = http.createServer(async (request, response) => {
       return send(response, 200, { ok: true, action: body.action, step, durationMs }, headers);
     }
     if (pathname === '/api/talk' && request.method === 'POST') {
+      if (!IPC365_TALK_ENABLED) return send(response, 409, { error:'IPC365 talk driver is not verified for this camera' }, headers);
       if (body.action === 'start') await startIpcTalk();
       else if (body.action === 'data') await writeIpcTalk(body.pcm);
       else if (body.action === 'stop') stopIpcTalk();
@@ -1529,7 +1543,7 @@ const server = http.createServer(async (request, response) => {
           localRecording:true,
           orientation:true,
           ...IPC365_DEVICE_FEATURES,
-          talk:true,
+          talk:IPC365_TALK_ENABLED,
           sdPlayback:false,
           cloudPlayback:false,
         },

@@ -77,6 +77,7 @@
   let talkQueue = Promise.resolve();
   let talking = false;
   let talkRequested = false;
+  let talkSessionStarted = false;
   let deviceFeatures = {};
   let deviceState = { light:'unknown', nightVision:'unknown', alarm:'unknown', tracking:'unknown', zoom:'stop', sdRecording:'unknown' };
   let deviceActionBusy = false;
@@ -508,12 +509,17 @@
     event?.currentTarget?.setPointerCapture?.(event.pointerId);
     talkRequested = true;
     try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('Il browser non consente l’accesso al microfono. Apri la pagina in HTTPS con Chrome o Safari.');
       const stream = await navigator.mediaDevices.getUserMedia({ audio:{ channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true } });
       talkStream = stream;
       if (!talkRequested) { stream.getTracks().forEach((track) => track.stop()); if (talkStream === stream) talkStream = null; return; }
       await sendTalk('start');
-      if (!talkRequested || !stream.getAudioTracks().some((track) => track.readyState === 'live')) { await sendTalk('stop').catch(() => {}); stream.getTracks().forEach((track) => track.stop()); if (talkStream === stream) talkStream = null; return; }
-      talkContext = new AudioContext({ latencyHint:'interactive' });
+      talkSessionStarted = true;
+      if (!talkRequested || !stream.getAudioTracks().some((track) => track.readyState === 'live')) { await sendTalk('stop').catch(() => {}); talkSessionStarted = false; stream.getTracks().forEach((track) => track.stop()); if (talkStream === stream) talkStream = null; return; }
+      const BrowserAudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!BrowserAudioContext) throw new Error('Audio in tempo reale non supportato da questo browser.');
+      talkContext = new BrowserAudioContext({ latencyHint:'interactive' });
+      await talkContext.resume();
       const source = talkContext.createMediaStreamSource(stream);
       talkProcessor = talkContext.createScriptProcessor(2048, 1, 1);
       const inputRate = talkContext.sampleRate; talkSamples = []; talking = true;
@@ -531,11 +537,11 @@
 
   async function stopTalking() {
     talkRequested = false;
-    const wasTalking = talking; talking = false;
+    const hadSession = talkSessionStarted; talkSessionStarted = false; talking = false;
     talkProcessor?.disconnect(); talkProcessor = null; talkStream?.getTracks().forEach((track) => track.stop()); talkStream = null;
     if (talkContext) { await talkContext.close().catch(() => {}); talkContext = null; }
     $('talkFeature').classList.remove('active'); if (!$('talkFeature').disabled) $('talkFeature').querySelector('small').textContent = 'Tieni premuto per parlare';
-    if (wasTalking) talkQueue = talkQueue.then(() => sendTalk('stop')).catch(() => {});
+    if (hadSession) talkQueue = talkQueue.then(() => sendTalk('stop')).catch(() => {});
   }
 
   async function loadAiStatus() {
@@ -1898,6 +1904,11 @@
     $('saveSettings').addEventListener('click', saveCamera); $('deleteCamera').addEventListener('click', deleteCamera);
     $('testStreamSettings').addEventListener('click', async () => { setLoading(true, 'Verifica HLS…'); try { await testStreamValues($('streamInput').value.trim(), $('streamUsernameInput').value.trim(), $('streamPasswordInput').value); toast('Playlist HLS raggiungibile.', 'success'); } catch (error) { toast(error.name === 'AbortError' ? 'Verifica scaduta.' : error.message, 'error'); } finally { setLoading(false); } });
     $('testCurrent').addEventListener('click', testCurrentCamera); $('refreshButton').addEventListener('click', testCurrentCamera);
+    $('advancedToggle').addEventListener('click', () => {
+      const expanded = document.body.classList.toggle('advanced-open');
+      $('advancedToggle').setAttribute('aria-expanded', String(expanded));
+      $('advancedToggle').textContent = expanded ? 'Vista semplice' : 'Altre funzioni';
+    });
     document.querySelectorAll('[data-ptz]').forEach((button) => button.addEventListener('pointerdown', (event) => { event.preventDefault(); sendPtz(button.dataset.ptz); }));
     document.querySelectorAll('[data-ptz-step]').forEach((button) => button.addEventListener('click', () => { ptzStep = Number(button.dataset.ptzStep); document.querySelectorAll('[data-ptz-step]').forEach((item) => item.classList.toggle('active', item === button)); }));
     $('snapshotButton').addEventListener('click', snapshot); $('recordButton').addEventListener('click', toggleRecording);
@@ -1924,7 +1935,7 @@
     $('rotateButton').addEventListener('click', toggleOrientation); $('orientationFeature').addEventListener('click', toggleOrientation);
     $('shareCamera').addEventListener('click', shareCurrentCamera);
     $('talkFeature').addEventListener('pointerdown', startTalking);
-    ['pointerup','pointercancel'].forEach((name) => $('talkFeature').addEventListener(name, stopTalking));
+    ['pointerup','pointercancel','pointerleave','lostpointercapture'].forEach((name) => $('talkFeature').addEventListener(name, stopTalking));
     $('favoriteCurrent').addEventListener('click', toggleFavorite);
     $('favoriteFilter').addEventListener('click', () => { preferences.favoritesOnly = !preferences.favoritesOnly; renderStats(); renderSwitcher(); renderGrid(); persistPreferences(); });
     $('cameraSort').addEventListener('change', () => { preferences.cameraSort = $('cameraSort').value; renderSwitcher(); renderGrid(); persistPreferences(); });

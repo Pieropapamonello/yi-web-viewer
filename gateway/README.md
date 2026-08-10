@@ -42,3 +42,9 @@ relativi pulsanti restano disabilitati.
 La modalità TF firmware è distinta dall'archivio diretto FREDI: seleziona
 registrazione continua/eventi sulla camera, mentre timeline, download e
 cancellazione richiedono anche il driver playback specifico del modello.
+
+L'audio bidirezionale FREDI usa per impostazione predefinita il dispositivo
+ALSA analogico `1`; può essere cambiato con `FREDI_TALK_DEVICE`. Il pulsante
+Parla viene pubblicato soltanto quando `talkd` risponde realmente. Per IPC365
+resta disabilitato finché `IPC365_TALK_ENABLED=true` non viene impostato dopo
+una cattura completa e una verifica del protocollo del modello.

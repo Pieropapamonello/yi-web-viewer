@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="./app.css">
     <title>FREDI Control</title>
   </head>
-  <body>
+  <body class="simple-ui">
     <svg class="svg-sprite" aria-hidden="true">
       <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h7A2.5 2.5 0 0 1 16 7.5V9l4-2v10l-4-2v1.5a2.5 2.5 0 0 1-2.5 2h-7a2.5 2.5 0 0 1-2.5-2z"/></symbol>
       <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.6 2.8 8.1 7 10 4.2-1.9 7-5.4 7-10V6z"/><path d="m9 12 2 2 4-5"/></symbol>
@@ -114,6 +114,7 @@
             <button class="button secondary favorite-filter" id="favoriteFilter" aria-pressed="false"><svg><use href="#i-star"/></svg><span>Preferiti</span></button>
             <label class="sort-control"><span>Ordina</span><select id="cameraSort"><option value="custom">Manuale</option><option value="name">Nome</option><option value="location">Posizione</option></select></label>
             <div class="segmented" aria-label="Modalità visualizzazione"><button id="viewFocus" class="active" title="Vista focus"><svg><use href="#i-focus"/></svg><span>Focus</span></button><button id="viewGrid" title="Vista griglia"><svg><use href="#i-grid"/></svg><span>Griglia</span></button></div>
+            <button class="button secondary" id="advancedToggle" aria-expanded="false">Altre funzioni</button>
             <button class="button secondary" id="refreshButton">↻ Aggiorna</button>
           </div>
         </section>

@@ -55,7 +55,7 @@ it does not prove that a particular camera model implements it.
 | --- | --- | --- |
 | RTSP/HLS/WebRTC | Implemented | Implemented |
 | Directional PTZ | Implemented through `/dev/ssp` | Implemented from verified LAN frames |
-| Browser talk | Implemented through `talkd` | Implemented from verified LAN frames |
+| Browser talk | Implemented through `talkd` on the analog speaker device | Disabled until a complete model-specific session is captured and acknowledged |
 | Direct camera SD recording | Implemented | Awaiting TF protocol capture |
 | Camera SD timeline/playback | Implemented | Awaiting TF protocol capture |
 | Lamp/alarm/tracking device controls | Driver/API/UI ready; requires model-specific helper commands | Driver/API/UI ready; requires verified command captures |
