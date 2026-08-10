@@ -22,3 +22,9 @@ docker run --rm -v "${PWD}\gateway\fredi-ptz:/src" cjj25/rsdk-4.8.5-5281-el `
 Install it as executable at `/var/tmp/sd/ptzctl` on the camera. Keep Telnet
 and the control gateway private to the trusted LAN; only the authenticated
 HTTPS gateway endpoint should be exposed to the web app.
+
+For press-and-hold controls, `ptzd` keeps a small authenticated LAN endpoint
+on port `23459`. It issues an immediate motor start and a separate stop without
+opening a Telnet session for every event. The gateway still applies a safety
+timeout. Build `ptzd.c` with the same MIPS toolchain and run
+`install-daemon.ps1` to copy it to the microSD.

@@ -38,6 +38,9 @@
   let draggedId = '';
   let recordingUrls = [];
   let ptzStep = 12;
+  let ptzHold = null;
+  let ptzHoldRequest = Promise.resolve(false);
+  let ptzReleaseTimer = 0;
   let selectedQuality = 'auto';
   let gestureStart = null;
   let motionTimer = null;
@@ -1515,12 +1518,38 @@
       if (!options.quiet) navigator.vibrate?.(18);
       snapToLiveEdge();
       [150, 450, 900, 1600].forEach((delay) => setTimeout(snapToLiveEdge, delay));
-      const response = await fetch(`${camera.apiBaseUrl.replace(/\/$/, '')}/api/ptz`, { method:'POST', cache:'no-store', keepalive:true, headers:{ 'Content-Type':'application/json', Authorization:`Bearer ${camera.apiToken}` }, body:JSON.stringify({ action, step, ...(options.durationMs ? { durationMs:options.durationMs } : {}) }) });
+      const response = await fetch(`${camera.apiBaseUrl.replace(/\/$/, '')}/api/ptz`, { method:'POST', cache:'no-store', keepalive:true, headers:{ 'Content-Type':'application/json', Authorization:`Bearer ${camera.apiToken}` }, body:JSON.stringify({ action, step, ...(options.durationMs ? { durationMs:options.durationMs } : {}), ...(options.continuous ? { continuous:true } : {}) }) });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.detail || result.error || 'Comando rifiutato.');
       if (!options.quiet) toast(`Movimento ${action} · intensità ${result.step || step}.`, 'success');
       return true;
     } catch (error) { if (!options.quiet) toast(error.message, 'error'); return false; }
+  }
+
+  function startPtzHold(event, button) {
+    event.preventDefault();
+    if (!event.isPrimary || (event.button !== undefined && event.button !== 0)) return;
+    const action = button.dataset.ptz;
+    if (action === 'stop') { stopPtzHold(); sendPtz('stop', ptzStep, { continuous:true, quiet:true }); return; }
+    if (ptzHold) return;
+    clearTimeout(ptzReleaseTimer);
+    button.setPointerCapture?.(event.pointerId);
+    ptzHold = { pointerId:event.pointerId, action, step:ptzStep, button, startedAt:performance.now() };
+    button.classList.add('holding');
+    navigator.vibrate?.(12);
+    ptzHoldRequest = sendPtz(action, ptzStep, { continuous:true, quiet:true });
+  }
+
+  function stopPtzHold(event) {
+    const hold = ptzHold;
+    if (!hold || (event?.pointerId !== undefined && event.pointerId !== hold.pointerId)) return;
+    ptzHold = null;
+    hold.button.classList.remove('holding');
+    const remaining = Math.max(0, 110 - (performance.now() - hold.startedAt));
+    clearTimeout(ptzReleaseTimer);
+    ptzReleaseTimer = setTimeout(() => {
+      Promise.resolve(ptzHoldRequest).finally(() => sendPtz('stop', hold.step, { continuous:true, quiet:true }));
+    }, remaining);
   }
 
   function snapToLiveEdge() {
@@ -1909,7 +1938,10 @@
       $('advancedToggle').setAttribute('aria-expanded', String(expanded));
       $('advancedToggle').textContent = expanded ? 'Vista semplice' : 'Altre funzioni';
     });
-    document.querySelectorAll('[data-ptz]').forEach((button) => button.addEventListener('pointerdown', (event) => { event.preventDefault(); sendPtz(button.dataset.ptz); }));
+    document.querySelectorAll('[data-ptz]').forEach((button) => {
+      button.addEventListener('pointerdown', (event) => startPtzHold(event, button));
+      ['pointerup','pointercancel','lostpointercapture'].forEach((name) => button.addEventListener(name, stopPtzHold));
+    });
     document.querySelectorAll('[data-ptz-step]').forEach((button) => button.addEventListener('click', () => { ptzStep = Number(button.dataset.ptzStep); document.querySelectorAll('[data-ptz-step]').forEach((item) => item.classList.toggle('active', item === button)); }));
     $('snapshotButton').addEventListener('click', snapshot); $('recordButton').addEventListener('click', toggleRecording);
     $('aiAnalyze').addEventListener('click', analyzeCurrentFrame);
@@ -1987,7 +2019,7 @@
       const camera = currentCamera(); if (camera) { healthByCamera.set(camera.id, { ok:false, latency:0, checkedAt:Date.now() }); updateFocusedCameraStatus(camera); }
       setVideoLoading(false); offline('Errore di riproduzione.', 'Controlla il codec e il gateway HLS.');
     });
-    document.addEventListener('visibilitychange', () => { if (document.hidden && trackingEnabled) stopPersonTracking('Pagina non visibile: inseguimento arrestato.', true); });
+    document.addEventListener('visibilitychange', () => { if (document.hidden) { stopPtzHold(); if (trackingEnabled) stopPersonTracking('Pagina non visibile: inseguimento arrestato.', true); } });
     player.addEventListener('timeupdate', () => {
       if (!archivePlayback || !selectedArchiveClip) return;
       const start = new Date(selectedArchiveClip.start); const seconds = start.getHours() * 3600 + start.getMinutes() * 60 + start.getSeconds() + player.currentTime;
@@ -2003,11 +2035,13 @@
     $('mobileCameras').addEventListener('click', () => window.scrollTo({ top:document.querySelector('.section-head').offsetTop - 75, behavior:'smooth' }));
     document.addEventListener('keydown', (event) => {
       if (event.key === '/' && !event.target.matches('input,textarea,select')) { event.preventDefault(); $('globalSearch').focus(); return; }
-      if (event.key === 'Escape') { const dialogs = [...document.querySelectorAll('dialog[open]')]; dialogs.forEach((dialog) => dialog.close()); if (!dialogs.length) sendPtz('stop'); return; }
+      if (event.key === 'Escape') { const dialogs = [...document.querySelectorAll('dialog[open]')]; dialogs.forEach((dialog) => dialog.close()); if (!dialogs.length) { stopPtzHold(); sendPtz('stop', ptzStep, { continuous:true, quiet:true }); } return; }
       if (event.target.matches('input,textarea,select,button') || document.querySelector('dialog[open]')) return;
       const actions = { ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right' };
-      if (actions[event.key]) { event.preventDefault(); sendPtz(actions[event.key]); }
+      if (actions[event.key]) { event.preventDefault(); if (!event.repeat) sendPtz(actions[event.key], ptzStep, { continuous:true, quiet:true }); }
     });
+    document.addEventListener('keyup', (event) => { if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(event.key)) sendPtz('stop', ptzStep, { continuous:true, quiet:true }); });
+    window.addEventListener('blur', () => stopPtzHold());
     window.addEventListener('beforeinstallprompt', (event) => { event.preventDefault(); deferredInstallPrompt = event; $('installButton').hidden = false; });
     $('installButton').addEventListener('click', async () => { if (!deferredInstallPrompt) return; deferredInstallPrompt.prompt(); await deferredInstallPrompt.userChoice; deferredInstallPrompt = null; $('installButton').hidden = true; });
     window.addEventListener('online', () => setConnection('', 'Vault sincronizzato')); window.addEventListener('offline', () => setConnection('error', 'Browser offline'));

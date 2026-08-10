@@ -75,12 +75,16 @@ const aiUsage = new Map();
 let ipcTalkSocket = null;
 let ipcTalkSequence = 1;
 let frediTalkSocket = null;
+let ipcPtzSafetyTimer = null;
+let frediPtzSafetyTimer = null;
 const ipcDeviceState = {};
 const frediDeviceState = {};
 const FREDI_TALK_PORT = Number(process.env.FREDI_TALK_PORT || 23457);
 const FREDI_TALK_DEVICE = Math.max(0, Number(process.env.FREDI_TALK_DEVICE || 1));
 const IPC365_TALK_ENABLED = String(process.env.IPC365_TALK_ENABLED || '').toLowerCase() === 'true';
 const FREDI_TALK_SECRET = crypto.createHmac('sha256', API_TOKEN).update('fredi-talk-v1').digest('hex');
+const FREDI_PTZ_FAST_PORT = Number(process.env.FREDI_PTZ_FAST_PORT || 23459);
+const FREDI_PTZ_FAST_SECRET = crypto.createHmac('sha256', API_TOKEN).update('fredi-ptz-v1').digest('hex');
 const FREDI_SD_PORT = Number(process.env.FREDI_SD_PORT || 23458);
 const FREDI_SD_SECRET = crypto.createHmac('sha256', API_TOKEN).update('fredi-sd-v1').digest('hex');
 
@@ -138,6 +142,68 @@ function tcpReady(host, port, timeoutMs = 900) {
     socket.once('connect', () => finish(true));
     socket.once('error', () => finish(false));
   });
+}
+
+function launchFrediPtzDaemon() {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host:FREDI_PTZ_HOST, port:FREDI_PTZ_PORT });
+    const timers = [];
+    const timeout = setTimeout(() => { socket.destroy(); reject(new Error('FREDI PTZ daemon Telnet timeout')); }, 3500);
+    socket.once('connect', () => {
+      timers.push(setTimeout(() => socket.write('root\r\n'), 80));
+      timers.push(setTimeout(() => socket.write('\r\n'), 180));
+      timers.push(setTimeout(() => socket.write(`killall ptzd 2>/dev/null; /var/tmp/sd/ptzd '${FREDI_PTZ_FAST_SECRET}' ${FREDI_PTZ_FAST_PORT} </dev/null >/var/tmp/sd/ptzd.log 2>&1 &\r\n`), 280));
+      timers.push(setTimeout(() => { clearTimeout(timeout); socket.destroy(); resolve(); }, 650));
+    });
+    socket.once('error', (error) => { clearTimeout(timeout); timers.forEach(clearTimeout); reject(error); });
+  });
+}
+
+function frediFastPtz(action, step) {
+  const directions = new Set(['up', 'down', 'left', 'right', 'stop']);
+  if (!directions.has(action)) return Promise.reject(new Error('Invalid FREDI PTZ direction'));
+  const normalizedStep = Math.min(30, Math.max(3, Number(step) || 12));
+  const timing = Math.round(40 - ((normalizedStep - 3) / 27) * 35);
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host:FREDI_PTZ_HOST, port:FREDI_PTZ_FAST_PORT });
+    let response = '';
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      error ? reject(error) : resolve({ speed:normalizedStep, timing, continuous:action !== 'stop' });
+    };
+    socket.setTimeout(1200, () => finish(new Error('FREDI fast PTZ timeout')));
+    socket.once('error', finish);
+    socket.on('data', (chunk) => {
+      response += chunk.toString('ascii');
+      if (response.includes('OK\n')) finish();
+      else if (response.includes('ERR\n')) finish(new Error('FREDI fast PTZ command rejected'));
+    });
+    socket.once('connect', () => socket.write(`${FREDI_PTZ_FAST_SECRET}\n${action} ${timing}\n`));
+  });
+}
+
+async function frediContinuousPtz(action, step) {
+  clearTimeout(frediPtzSafetyTimer);
+  try {
+    let result;
+    try {
+      result = await frediFastPtz(action, step);
+    } catch {
+      await launchFrediPtzDaemon();
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      result = await frediFastPtz(action, step);
+    }
+    if (action !== 'stop') {
+      frediPtzSafetyTimer = setTimeout(() => frediFastPtz('stop', step).catch(() => {}), 15000);
+    }
+    return result;
+  } catch (error) {
+    if (action === 'stop') return frediPtz('stop', step, 40);
+    throw error;
+  }
 }
 
 function launchFrediTalkDaemon() {
@@ -359,7 +425,7 @@ function ipc365Frame(action, requestedStep = IPC365_PTZ_STEP) {
   return frame;
 }
 
-function ipc365Move(action, step, durationMs = MOVE_DURATION) {
+function ipc365Move(action, step, durationMs = MOVE_DURATION, continuous = false) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host: HOST, port: IPC365_PTZ_PORT });
     let settled = false;
@@ -380,7 +446,7 @@ function ipc365Move(action, step, durationMs = MOVE_DURATION) {
           socket.end();
           resolve();
         };
-        if (action === 'stop') return finish();
+        if (action === 'stop' || continuous) return finish();
         setTimeout(() => socket.write(ipc365Frame('stop'), (stopError) => stopError ? fail(stopError) : finish()), durationMs);
       });
     });
@@ -389,6 +455,14 @@ function ipc365Move(action, step, durationMs = MOVE_DURATION) {
 
 async function move(action, step, durationMs = MOVE_DURATION) {
   await ipc365Move(action === 'home' ? 'stop' : action, step, durationMs);
+}
+
+async function continuousMove(action, step) {
+  clearTimeout(ipcPtzSafetyTimer);
+  await ipc365Move(action === 'home' ? 'stop' : action, step, MOVE_DURATION, true);
+  if (action !== 'stop' && action !== 'home') {
+    ipcPtzSafetyTimer = setTimeout(() => ipc365Move('stop', step, MOVE_DURATION, true).catch(() => {}), 15000);
+  }
 }
 
 function executeIpcDeviceAction(feature, value) {
@@ -1478,6 +1552,10 @@ const server = http.createServer(async (request, response) => {
     const body = await readJson(request);
     if (pathname === '/fredi/api/ptz' && request.method === 'POST') {
       const step = Math.min(30, Math.max(3, Number(body.step) || 12));
+      if (body.continuous === true) {
+        const result = await frediContinuousPtz(body.action, step);
+        return send(response, 200, { ok:true, action:body.action, step, ...result }, headers);
+      }
       const requestedDuration = Number(body.durationMs);
       const defaultDuration = Math.min(850, 150 + (step * 25));
       const durationMs = Math.min(1200, Math.max(40,
@@ -1511,6 +1589,10 @@ const server = http.createServer(async (request, response) => {
     }
     if (pathname === '/api/ptz' && request.method === 'POST') {
       const step = Math.min(30, Math.max(3, Number(body.step) || IPC365_PTZ_STEP));
+      if (body.continuous === true) {
+        await continuousMove(body.action, step);
+        return send(response, 200, { ok:true, action:body.action, step, continuous:body.action !== 'stop' }, headers);
+      }
       const durationMs = Math.min(2000, Math.max(80, Number(body.durationMs) || MOVE_DURATION));
       await move(body.action, step, durationMs);
       console.log(`PTZ ${body.action} step ${step} completed in ${durationMs}ms`);

@@ -48,3 +48,8 @@ ALSA analogico `1`; può essere cambiato con `FREDI_TALK_DEVICE`. Il pulsante
 Parla viene pubblicato soltanto quando `talkd` risponde realmente. Per IPC365
 resta disabilitato finché `IPC365_TALK_ENABLED=true` non viene impostato dopo
 una cattura completa e una verifica del protocollo del modello.
+
+Il controllo PTZ continuo usa `ptzd` sulla porta LAN `23459`: la pressione
+avvia subito il motore e il rilascio invia uno stop separato. Se il browser
+scompare o lo stop non arriva, il gateway arresta comunque il movimento dopo
+15 secondi. Il vecchio comando Telnet rimane come ripiego per gli stop.
