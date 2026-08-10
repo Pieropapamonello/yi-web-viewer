@@ -66,23 +66,33 @@ static void play_client(int client, unsigned int device, const char *token) {
 
     if (!authenticated(client, token)) return;
     enable_speaker_route();
-    struct pcm *pcm = pcm_open(0, device, PCM_OUT, &config);
-    if (!pcm || !pcm_is_ready(pcm)) {
-        fprintf(stderr, "pcm open failed: %s\n", pcm ? pcm_get_error(pcm) : "allocation failed");
-        if (pcm) pcm_close(pcm);
-        return;
+    struct pcm *outputs[2] = {NULL, NULL};
+    const unsigned int devices[2] = {device, device == 0 ? 1U : 0U};
+    unsigned int ready_outputs = 0;
+    for (unsigned int index = 0; index < 2; index++) {
+        outputs[index] = pcm_open(0, devices[index], PCM_OUT, &config);
+        if (!outputs[index] || !pcm_is_ready(outputs[index])) {
+            fprintf(stderr, "pcm device %u open failed: %s\n", devices[index], outputs[index] ? pcm_get_error(outputs[index]) : "allocation failed");
+            if (outputs[index]) pcm_close(outputs[index]);
+            outputs[index] = NULL;
+        } else ready_outputs++;
     }
+    if (!ready_outputs) return;
 
     unsigned char audio[AUDIO_BYTES];
     while (running) {
         const ssize_t count = recv(client, audio, sizeof(audio), 0);
         if (count <= 0) break;
-        if (pcm_write(pcm, audio, (unsigned int)(count & ~1U)) != 0) {
-            fprintf(stderr, "pcm write failed: %s\n", pcm_get_error(pcm));
-            break;
+        unsigned int wrote = 0;
+        for (unsigned int index = 0; index < 2; index++) {
+            if (!outputs[index]) continue;
+            if (pcm_write(outputs[index], audio, (unsigned int)(count & ~1U)) != 0) {
+                fprintf(stderr, "pcm device %u write failed: %s\n", devices[index], pcm_get_error(outputs[index]));
+            } else wrote++;
         }
+        if (!wrote) break;
     }
-    pcm_close(pcm);
+    for (unsigned int index = 0; index < 2; index++) if (outputs[index]) pcm_close(outputs[index]);
 }
 
 int main(int argc, char **argv) {

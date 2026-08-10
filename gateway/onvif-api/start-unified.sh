@@ -35,22 +35,20 @@ run_ffmpeg() {
   done
 }
 
-run_ipc365_main() {
+run_ipc365_capture() {
   while true; do
-    # This camera periodically closes RTSP and resets its timestamps. Publish a
-    # fresh RTSP session on every reconnect so MediaMTX also resets HLS/WebRTC;
-    # a long-lived UDP/MPEG-TS source turns the clock jump into a multi-minute
-    # HLS segment that browsers cannot play.
+    # The camera closes RTSP roughly once a minute. Keep that unstable session
+    # on the input side of a local MPEG-TS pipe; the normalizer below remains a
+    # single long-lived MediaMTX publisher while this loop reconnects.
     ffmpeg \
       -hide_banner -loglevel warning -fflags +genpts+discardcorrupt+igndts \
       -rtsp_transport tcp -timeout 10000000 -i "$IPC365_RTSP_URL" \
       -map 0:v:0 -map '0:a:0?' \
-      -vf 'fps=20,setpts=N/(20*TB)' \
-      -c:v libx264 -preset veryfast -tune zerolatency -crf 22 -g 40 -sc_threshold 0 \
-      -c:a aac -b:a 48k -ar 8000 -ac 1 -af 'aresample=async=1000:first_pts=0' \
-      -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:8554/ipc365
+      -c:v copy -c:a aac -b:a 48k -ar 8000 -ac 1 \
+      -mpegts_flags +initial_discontinuity -muxdelay 0.1 \
+      -f mpegts 'udp://127.0.0.1:9000?pkt_size=1316'
     code=$?
-    echo "[ipc365-main] FFmpeg terminato con codice $code; riconnessione tra ${RECONNECT_DELAY}s." >&2
+    echo "[ipc365-capture] RTSP interrotto con codice $code; riconnessione tra ${RECONNECT_DELAY}s." >&2
     sleep "$RECONNECT_DELAY"
   done
 }
@@ -77,7 +75,19 @@ remember_pid "$!"
 
 sleep 2
 
-run_ipc365_main &
+run_ffmpeg ipc365-main \
+  -hide_banner -loglevel warning -fflags +genpts+discardcorrupt+igndts \
+  -i 'udp://127.0.0.1:9000?fifo_size=1000000&overrun_nonfatal=1' \
+  -map 0:v:0 -map '0:a:0?' \
+  -vf 'fps=20,setpts=N/(20*TB)' \
+  -c:v libx264 -preset veryfast -tune zerolatency -crf 22 -g 40 -sc_threshold 0 \
+  -c:a aac -b:a 48k -ar 8000 -ac 1 -af 'aresample=async=1000:first_pts=0,asetpts=N/SR/TB' \
+  -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:8554/ipc365 &
+remember_pid "$!"
+
+sleep 1
+
+run_ipc365_capture &
 remember_pid "$!"
 
 run_ffmpeg fredi-main \

@@ -44,6 +44,7 @@
   let ptzHold = null;
   let ptzHoldRequest = Promise.resolve(false);
   let ptzReleaseTimer = 0;
+  let ptzKeepaliveTimer = 0;
   let selectedQuality = 'auto';
   let gestureStart = null;
   let motionTimer = null;
@@ -1180,7 +1181,13 @@
         player.play().catch(() => { setVideoLoading(false); toast('Tocca il video per avviare il live.'); });
       });
       hls.on(Hls.Events.ERROR, (_, data) => {
-        if (!data.fatal || generation !== streamGeneration) return;
+        if (generation !== streamGeneration) return;
+        if (!data.fatal) {
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && Date.now() - lastPlaybackProgressAt > 3500) {
+            scheduleHlsReconnect(camera, generation, data.details || 'network stalled');
+          }
+          return;
+        }
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR && hlsRecoveryAttempts < 2) {
           hlsRecoveryAttempts += 1;
           hlsRecovering = true;
@@ -1222,9 +1229,9 @@
   }
 
   function recoverStalledPlayback() {
-    if (archivePlayback || document.hidden || player.paused || !$('stage').classList.contains('playing')) return;
+    if (archivePlayback || document.hidden) return;
     const now = Date.now();
-    if (now - lastPlaybackProgressAt < 5000 || now - lastStallRecoveryAt < 7000) return;
+    if (now - lastPlaybackProgressAt < 4500 || now - lastStallRecoveryAt < 6500) return;
     const camera = currentCamera();
     if (!camera) return;
     lastStallRecoveryAt = now;
@@ -1676,12 +1683,20 @@
     button.classList.add('holding');
     navigator.vibrate?.(12);
     ptzHoldRequest = sendPtz(action, ptzStep, { continuous:true, quiet:true });
+    clearInterval(ptzKeepaliveTimer);
+    ptzKeepaliveTimer = setInterval(() => {
+      if (!ptzHold || ptzHold.action !== action) return;
+      ptzHoldRequest = Promise.resolve(ptzHoldRequest).finally(() =>
+        ptzHold ? sendPtz(action, ptzHold.step, { continuous:true, quiet:true }) : false);
+    }, 900);
   }
 
   function stopPtzHold(event) {
     const hold = ptzHold;
     if (!hold || (event?.pointerId !== undefined && event.pointerId !== hold.pointerId)) return;
     ptzHold = null;
+    clearInterval(ptzKeepaliveTimer);
+    ptzKeepaliveTimer = 0;
     hold.button.classList.remove('holding');
     const remaining = Math.max(0, 110 - (performance.now() - hold.startedAt));
     clearTimeout(ptzReleaseTimer);

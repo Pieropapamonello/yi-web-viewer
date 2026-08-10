@@ -41,6 +41,9 @@ const IPC365_PTZ_STEP = Math.min(30, Math.max(3, Number(process.env.IPC365_PTZ_S
 const IPC365_SOURCE_ID = process.env.IPC365_SOURCE_ID || 'af93c63b';
 const IPC365_DEVICE_ID = process.env.IPC365_DEVICE_ID || '09f74b01';
 const IPC365_CLIENT_ID = process.env.IPC365_CLIENT_ID || 'e4126900';
+const IPC365_CLOUD_HOST = process.env.IPC365_CLOUD_HOST || '35.156.111.237';
+const IPC365_CLOUD_PORT = Number(process.env.IPC365_CLOUD_PORT || 19001);
+const IPC365_CLOUD_TOKEN = String(process.env.IPC365_CLOUD_TOKEN || '').trim();
 const FREDI_PTZ_HOST = process.env.FREDI_PTZ_HOST || '192.168.1.78';
 const FREDI_PTZ_PORT = Number(process.env.FREDI_PTZ_PORT || 23);
 const FREDI_PTZ_COMMAND = process.env.FREDI_PTZ_COMMAND || '/var/tmp/sd/ptzctl';
@@ -87,9 +90,13 @@ let ipcTalkStartPromise = null;
 let ipcTalkKeepalive = null;
 let ipcTalkSequence = 1;
 let ipcTalkBytes = 0;
+let ipcCloudTalkSocket = null;
+let ipcCloudKeepalive = null;
 let frediTalkSocket = null;
 let frediTalkBytes = 0;
 let ipcPtzSafetyTimer = null;
+let ipcPtzRepeatTimer = null;
+let ipcPtzRepeatBusy = false;
 let frediPtzSafetyTimer = null;
 const ipcDeviceState = {};
 const frediDeviceState = {};
@@ -105,6 +112,69 @@ const FREDI_SD_SECRET = crypto.createHmac('sha256', API_TOKEN).update('fredi-sd-
 
 function ipcTalkFrame(pcm) {
   return talkAudioFrame(pcm, ipcTalkSequence++, { clientId:IPC365_CLIENT_ID, sourceId:IPC365_SOURCE_ID });
+}
+
+function ipcCloudRequest(opcode, length) {
+  const frame = Buffer.alloc(length);
+  frame.writeUInt32BE(0xccddeeff, 0);
+  frame.writeUInt16LE(opcode, 4);
+  ipc365Id(IPC365_CLIENT_ID, 'IPC365_CLIENT_ID').copy(frame, 8);
+  frame.writeUInt32LE(length, 12);
+  return frame;
+}
+
+function openIpcCloudSession() {
+  if (!/^[A-Za-z0-9+/]{68,}={0,2}$/.test(IPC365_CLOUD_TOKEN)) return Promise.reject(new Error('IPC365 cloud relay token is not configured'));
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host:IPC365_CLOUD_HOST, port:IPC365_CLOUD_PORT });
+    const login = ipcCloudRequest(0x4ee8, 168);
+    login.writeUInt32LE(0x00010001, 20);
+    ipc365Id(IPC365_DEVICE_ID, 'IPC365_DEVICE_ID').copy(login, 24);
+    ipc365Id(IPC365_DEVICE_ID, 'IPC365_DEVICE_ID').copy(login, 28);
+    login.write(IPC365_CLOUD_TOKEN.slice(0, 72), 40, 'ascii');
+    const register = ipcCloudRequest(0x4eea, 36);
+    ipc365Id(IPC365_SOURCE_ID, 'IPC365_SOURCE_ID').copy(register, 20);
+    register.writeUInt32LE(1, 28); register.writeUInt32LE(10, 32);
+    let buffer = Buffer.alloc(0); let state = 'login'; let settled = false;
+    const timeout = setTimeout(() => finish(new Error(`IPC365 cloud ${state} timeout`)), 5000);
+    const finish = (error) => {
+      if (settled) return;
+      settled = true; clearTimeout(timeout);
+      if (error) { socket.destroy(); reject(error); } else resolve(socket);
+    };
+    socket.setKeepAlive(true, 3000);
+    socket.once('connect', () => socket.write(login));
+    socket.once('error', finish);
+    socket.on('data', (chunk) => {
+      if (settled) return;
+      buffer = Buffer.concat([buffer, chunk]).subarray(-8192);
+      for (let offset = 0; offset + 16 <= buffer.length; offset += 1) {
+        if (buffer.readUInt32BE(offset) !== 0xccddeeff) continue;
+        const length = buffer.readUInt32LE(offset + 12);
+        if (length < 16 || offset + length > buffer.length) continue;
+        const opcode = buffer.readUInt16LE(offset + 4);
+        if (state === 'login' && opcode === 0x4ee8) {
+          if (buffer.readUInt32LE(offset + 20) !== 2) return finish(new Error('IPC365 cloud login rejected'));
+          state = 'register'; socket.write(register); return;
+        }
+        if (state === 'register' && opcode === 0x4eea) return finish();
+      }
+    });
+  });
+}
+
+async function setIpcCloudSpeaker(enabled) {
+  const ids = { clientId:IPC365_CLIENT_ID, sourceId:IPC365_SOURCE_ID, deviceId:IPC365_DEVICE_ID };
+  if (enabled) {
+    if (!ipcCloudTalkSocket || ipcCloudTalkSocket.destroyed) ipcCloudTalkSocket = await openIpcCloudSession();
+    ipcCloudTalkSocket.write(talkStateFrame(true, ids));
+    clearInterval(ipcCloudKeepalive);
+    ipcCloudKeepalive = setInterval(() => ipcCloudTalkSocket && !ipcCloudTalkSocket.destroyed && ipcCloudTalkSocket.write(keepaliveFrame(IPC365_CLIENT_ID)), 3000);
+    ipcCloudKeepalive.unref(); return;
+  }
+  clearInterval(ipcCloudKeepalive); ipcCloudKeepalive = null;
+  if (ipcCloudTalkSocket && !ipcCloudTalkSocket.destroyed) ipcCloudTalkSocket.end(talkStateFrame(false, ids));
+  ipcCloudTalkSocket = null;
 }
 
 function startIpcTalk() {
@@ -124,9 +194,10 @@ function startIpcTalk() {
       for (let offset = 0; offset + 16 <= received.length; offset += 1) {
         if (received.readUInt32BE(offset) !== 0xccddeeff || received.readUInt32LE(offset + 4) !== 0x9c4e) continue;
         ready = true; clearTimeout(timeout);
-        socket.write(handshake.acknowledge, (error) => {
+        socket.write(handshake.acknowledge, async (error) => {
           if (error) return reject(error);
-          socket.write(talkStateFrame(true, ids));
+          try { await setIpcCloudSpeaker(true); }
+          catch (cloudError) { socket.destroy(); return reject(cloudError); }
           ipcTalkSocket = socket; ipcTalkSequence = 1; ipcTalkBytes = 0;
           ipcTalkKeepalive = setInterval(() => {
             if (!socket.destroyed) socket.write(keepaliveFrame(IPC365_CLIENT_ID));
@@ -161,28 +232,26 @@ function stopIpcTalk() {
   ipcTalkKeepalive = null;
   if (ipcTalkSocket && !ipcTalkSocket.destroyed) {
     const ids = { clientId:IPC365_CLIENT_ID, sourceId:IPC365_SOURCE_ID, deviceId:IPC365_DEVICE_ID };
-    ipcTalkSocket.write(talkStateFrame(false, ids));
     ipcTalkSocket.end(talkCloseFrame(ids));
   }
+  setIpcCloudSpeaker(false).catch(() => {});
   if (ipcTalkBytes) console.log(`IPC365 talk session stopped after ${ipcTalkBytes} PCM bytes`);
   ipcTalkBytes = 0;
   ipcTalkSocket = null;
 }
 
-function triggerIpcAlarm() {
-  return new Promise((resolve, reject) => {
-    const socket = net.createConnection({ host:HOST, port:IPC365_PTZ_PORT });
-    let settled = false;
-    const finish = (error) => {
-      if (settled) return; settled = true; socket.destroy();
-      error ? reject(error) : resolve({ feature:'alarm', value:'trigger', acknowledged:false, captured:true });
-    };
-    socket.setTimeout(2500, () => finish(new Error('IPC365 alarm connection timeout')));
-    socket.once('error', finish);
-    socket.once('connect', () => socket.write(alarmTriggerFrame({
+async function triggerIpcAlarm() {
+  const socket = await openIpcCloudSession();
+  await new Promise((resolve, reject) => {
+    socket.write(alarmTriggerFrame({
       clientId:IPC365_CLIENT_ID, sourceId:IPC365_SOURCE_ID, deviceId:IPC365_DEVICE_ID,
-    }), (error) => error ? finish(error) : setTimeout(finish, 120)));
+    }), (error) => {
+      if (error) reject(error);
+      else setTimeout(resolve, 200);
+    });
   });
+  socket.destroy();
+  return { feature:'alarm', value:'trigger', acknowledged:true, relay:'ipc365-cloud' };
 }
 
 function tcpReady(host, port, timeoutMs = 900) {
@@ -509,10 +578,23 @@ async function move(action, step, durationMs = MOVE_DURATION) {
 
 async function continuousMove(action, step) {
   clearTimeout(ipcPtzSafetyTimer);
-  await ipc365Move(action === 'home' ? 'stop' : action, step, MOVE_DURATION, true);
-  if (action !== 'stop' && action !== 'home') {
-    ipcPtzSafetyTimer = setTimeout(() => ipc365Move('stop', step, MOVE_DURATION, true).catch(() => {}), 15000);
-  }
+  clearInterval(ipcPtzRepeatTimer);
+  ipcPtzRepeatTimer = null;
+  const direction = action === 'home' ? 'stop' : action;
+  await ipc365Move(direction, step, MOVE_DURATION, true);
+  if (direction === 'stop') return;
+  ipcPtzRepeatTimer = setInterval(async () => {
+    if (ipcPtzRepeatBusy) return;
+    ipcPtzRepeatBusy = true;
+    try { await ipc365Move(direction, step, MOVE_DURATION, true); }
+    catch (error) { console.warn(`IPC365 PTZ repeat: ${error.message}`); }
+    finally { ipcPtzRepeatBusy = false; }
+  }, 140);
+  ipcPtzSafetyTimer = setTimeout(() => {
+    clearInterval(ipcPtzRepeatTimer);
+    ipcPtzRepeatTimer = null;
+    ipc365Move('stop', step, MOVE_DURATION, true).catch(() => {});
+  }, 15000);
 }
 
 function executeIpcDeviceAction(feature, value) {
